@@ -9,7 +9,7 @@ function App() {
       {/* Header */}
       <header className="header">
         <div>
-          <h1>FLOODGUARD</h1>
+          <h1>FloodLens</h1>
           <p>Urban Flood Nowcasting System</p>
         </div>
 
