@@ -25,9 +25,9 @@ function App() {
         {/* Risk Card */}
         <section className="risk-card">
           <p className="label">CURRENT FLOOD RISK</p>
-          <h2>HIGH</h2>
+          <h2>MEDIUM</h2>
           <p>Predicted water depth</p>
-          <strong>24 cm</strong>
+          <strong>15 cm</strong>
           <p className="warning">⚠ Risk increasing</p>
         </section>
 
