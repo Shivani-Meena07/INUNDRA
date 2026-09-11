@@ -1,0 +1,45 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'DM Mono', 'Courier New', monospace;
+
+  --color-maroon-50: #FBF2F4;
+  --color-maroon-100: #F5E0E4;
+  --color-maroon-200: #E8B4BD;
+  --color-maroon-600: #9B1D2E;
+  --color-maroon-700: #8B1A2A;
+  --color-maroon-800: #6E1521;
+
+  --color-warm-50: #F8F6F2;
+  --color-warm-100: #F0EDE9;
+  --color-warm-200: #E5E0DA;
+  --color-warm-300: #D4CEC7;
+  --color-warm-400: #B8B0A8;
+  --color-warm-500: #8C867E;
+  --color-warm-600: #6B6560;
+  --color-warm-700: #4A4540;
+  --color-warm-800: #2E2A26;
+  --color-warm-900: #1A1714;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #F8F6F2;
+  color: #1A1714;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #D4CEC7 transparent;
+}
+*::-webkit-scrollbar { width: 4px; height: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background-color: #D4CEC7; border-radius: 2px; }
