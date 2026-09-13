@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { useApp } from "../../state/AppContext";
+import { cityData, RiskLevel } from "../../data/mockData";
 
 const ncrBoundary: [number, number][] = [
   [28.88, 76.84],
@@ -52,9 +53,10 @@ const CITY_LOCATIONS: Record<
 /*
  * Rainfall overlay bounds for each city.
  */
+
 const CITY_BOUNDS: Record<
   string,
-  L.LatLngBoundsExpression
+  [[number, number], [number, number]]
 > = {
   delhi: [
     [28.20, 76.70],
@@ -72,10 +74,63 @@ const CITY_BOUNDS: Record<
   ],
 };
 
-export default function MapView() {
-  const mapContainer = useRef<HTMLDivElement>(null);
+/*
+ * Flood risk colours.
+ */
 
-  const mapRef = useRef<L.Map | null>(null);
+const riskColors: Record<RiskLevel, string> = {
+  CRITICAL: "#991B1B",
+  HIGH: "#DC2626",
+  MODERATE: "#F59E0B",
+  LOW: "#84CC16",
+  SAFE: "#16A34A",
+};
+
+/*
+ * Convert the existing prototype x/y coordinates
+ * into geographic Leaflet coordinates.
+ *
+ * The current mock data uses a 1000 x 750 coordinate space.
+ * This keeps mockData.ts unchanged.
+ */
+
+function prototypeToLatLng(
+  x: number,
+  y: number,
+  city: string
+): [number, number] {
+  const bounds =
+    CITY_BOUNDS[city] || CITY_BOUNDS.delhi;
+
+  const southWest = L.latLng(
+    bounds[0][0],
+    bounds[0][1]
+  );
+
+  const northEast = L.latLng(
+    bounds[1][0],
+    bounds[1][1]
+  );
+
+  const longitude =
+    southWest.lng +
+    (x / 1000) *
+      (northEast.lng - southWest.lng);
+
+  const latitude =
+    northEast.lat -
+    (y / 750) *
+      (northEast.lat - southWest.lat);
+
+  return [latitude, longitude];
+}
+
+export default function MapView() {
+  const mapContainer =
+    useRef<HTMLDivElement>(null);
+
+  const mapRef =
+    useRef<L.Map | null>(null);
 
   const rainfallOverlayRef =
     useRef<L.ImageOverlay | null>(null);
@@ -83,15 +138,24 @@ export default function MapView() {
   const boundaryRef =
     useRef<L.Polygon | null>(null);
 
-  const { state } = useApp();
-
   /*
-   * This will be:
-   * "delhi"
-   * "mumbai"
-   * or
-   * "chennai"
+   * Dynamic map layer references.
    */
+
+  const floodZonesRef =
+    useRef<L.Polygon[]>([]);
+
+  const hotspotMarkersRef =
+    useRef<L.CircleMarker[]>([]);
+
+  const drainageMarkersRef =
+    useRef<L.CircleMarker[]>([]);
+
+  const drainageLinesRef =
+    useRef<L.Polyline[]>([]);
+
+  const { state, dispatch } = useApp();
+
   const city = String(state.city);
 
   /*
@@ -99,12 +163,14 @@ export default function MapView() {
    * CREATE MAP
    * ==================================================
    */
+
   useEffect(() => {
     if (!mapContainer.current) return;
 
     /*
      * Don't create the Leaflet map more than once.
      */
+
     if (mapRef.current) return;
 
     const initialLocation =
@@ -117,6 +183,7 @@ export default function MapView() {
       initialLocation.center,
       initialLocation.zoom
     );
+    
 
     mapRef.current = map;
 
@@ -125,6 +192,7 @@ export default function MapView() {
      * OPEN STREET MAP
      * ==================================================
      */
+
     L.tileLayer(
       "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
       {
@@ -139,6 +207,7 @@ export default function MapView() {
      * RAINFALL LEGEND
      * ==================================================
      */
+
     const legend = L.DomUtil.create(
       "div",
       "rainfall-legend"
@@ -150,7 +219,8 @@ export default function MapView() {
     legend.style.zIndex = "1000";
     legend.style.background =
       "rgba(255,255,255,0.92)";
-    legend.style.padding = "10px 12px";
+    legend.style.padding =
+      "10px 12px";
     legend.style.borderRadius = "8px";
     legend.style.boxShadow =
       "0 2px 8px rgba(0,0,0,0.18)";
@@ -212,6 +282,7 @@ export default function MapView() {
      * CLEANUP
      * ==================================================
      */
+
     return () => {
       map.remove();
       mapRef.current = null;
@@ -222,15 +293,8 @@ export default function MapView() {
    * ==================================================
    * CHANGE CITY
    * ==================================================
-   *
-   * This runs whenever:
-   *
-   * Delhi -> Mumbai
-   * Mumbai -> Chennai
-   * Chennai -> Delhi
-   *
-   * etc.
    */
+
   useEffect(() => {
     const map = mapRef.current;
 
@@ -255,13 +319,9 @@ export default function MapView() {
       }
     );
 
-    /*
-     * Tell Leaflet to recalculate the map size.
-     */
     setTimeout(() => {
       map.invalidateSize();
     }, 300);
-
   }, [city]);
 
   /*
@@ -269,6 +329,7 @@ export default function MapView() {
    * RAINFALL OVERLAY
    * ==================================================
    */
+
   useEffect(() => {
     const map = mapRef.current;
 
@@ -277,6 +338,7 @@ export default function MapView() {
     /*
      * Remove old rainfall overlay.
      */
+
     if (rainfallOverlayRef.current) {
       map.removeLayer(
         rainfallOverlayRef.current
@@ -288,6 +350,7 @@ export default function MapView() {
     /*
      * Remove old NCR boundary.
      */
+
     if (boundaryRef.current) {
       map.removeLayer(
         boundaryRef.current
@@ -301,10 +364,11 @@ export default function MapView() {
      * SYNTHETIC RAINFALL VISUALIZATION
      * ==================================================
      *
-     * This is demo/synthetic rainfall data for now.
-     * Later this can be replaced with actual backend
+     * Demo/synthetic rainfall data for now.
+     * Later this can be replaced with backend
      * rainfall prediction data.
      */
+
     const rainfallSvg = `
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -315,7 +379,6 @@ export default function MapView() {
 
         <defs>
 
-          <!-- Subtle green background -->
           <linearGradient
             id="baseRain"
             x1="0"
@@ -344,7 +407,6 @@ export default function MapView() {
 
           </linearGradient>
 
-          <!-- Main rainfall zone -->
           <radialGradient
             id="rainMain"
             cx="50%"
@@ -384,7 +446,6 @@ export default function MapView() {
 
           </radialGradient>
 
-          <!-- Heavy rainfall zone -->
           <radialGradient
             id="rainHeavy"
             cx="50%"
@@ -430,7 +491,6 @@ export default function MapView() {
 
           </radialGradient>
 
-          <!-- Yellow transition -->
           <radialGradient
             id="rainYellow"
             cx="50%"
@@ -464,7 +524,6 @@ export default function MapView() {
 
           </radialGradient>
 
-          <!-- Extreme hotspot -->
           <radialGradient
             id="rainHotspot"
             cx="50%"
@@ -506,14 +565,12 @@ export default function MapView() {
 
         </defs>
 
-        <!-- Background -->
         <rect
           width="1000"
           height="750"
           fill="url(#baseRain)"
         />
 
-        <!-- Main rainfall region -->
         <ellipse
           cx="455"
           cy="350"
@@ -522,7 +579,6 @@ export default function MapView() {
           fill="url(#rainMain)"
         />
 
-        <!-- Heavy rainfall region -->
         <ellipse
           cx="735"
           cy="285"
@@ -531,7 +587,6 @@ export default function MapView() {
           fill="url(#rainHeavy)"
         />
 
-        <!-- Moderate rainfall region -->
         <ellipse
           cx="650"
           cy="500"
@@ -540,7 +595,6 @@ export default function MapView() {
           fill="url(#rainMain)"
         />
 
-        <!-- Southwest rainfall -->
         <ellipse
           cx="300"
           cy="535"
@@ -549,7 +603,6 @@ export default function MapView() {
           fill="url(#rainMain)"
         />
 
-        <!-- Northern transition -->
         <ellipse
           cx="430"
           cy="165"
@@ -558,7 +611,6 @@ export default function MapView() {
           fill="url(#rainYellow)"
         />
 
-        <!-- Eastern transition -->
         <ellipse
           cx="850"
           cy="470"
@@ -567,7 +619,6 @@ export default function MapView() {
           fill="url(#rainYellow)"
         />
 
-        <!-- Southwest transition -->
         <ellipse
           cx="130"
           cy="350"
@@ -576,7 +627,6 @@ export default function MapView() {
           fill="url(#rainYellow)"
         />
 
-        <!-- Extreme hotspot -->
         <ellipse
           cx="760"
           cy="315"
@@ -585,7 +635,6 @@ export default function MapView() {
           fill="url(#rainHotspot)"
         />
 
-        <!-- Second hotspot -->
         <ellipse
           cx="535"
           cy="425"
@@ -601,9 +650,6 @@ export default function MapView() {
       "data:image/svg+xml;charset=UTF-8," +
       encodeURIComponent(rainfallSvg);
 
-    /*
-     * Select rainfall bounds according to city.
-     */
     const rainfallBounds =
       CITY_BOUNDS[city] ||
       CITY_BOUNDS.delhi;
@@ -627,9 +673,8 @@ export default function MapView() {
      * ==================================================
      * NCR BOUNDARY
      * ==================================================
-     *
-     * Only display this when Delhi is selected.
      */
+
     if (city === "delhi") {
       const boundary = L.polygon(
         ncrBoundary,
@@ -647,14 +692,327 @@ export default function MapView() {
       boundaryRef.current =
         boundary;
     }
-
   }, [city]);
+
+  /*
+   * ==================================================
+   * FLOOD + DRAINAGE DATA LAYERS
+   * ==================================================
+   */
+
+  useEffect(() => {
+    const map = mapRef.current;
+
+    if (!map) return;
+
+    const data = cityData[city];
+
+    /*
+     * ==================================================
+     * CLEAR PREVIOUS DATA LAYERS
+     * ==================================================
+     */
+
+    floodZonesRef.current.forEach(
+      (layer) => {
+        map.removeLayer(layer);
+      }
+    );
+
+    hotspotMarkersRef.current.forEach(
+      (layer) => {
+        map.removeLayer(layer);
+      }
+    );
+
+    drainageMarkersRef.current.forEach(
+      (layer) => {
+        map.removeLayer(layer);
+      }
+    );
+
+    drainageLinesRef.current.forEach(
+      (layer) => {
+        map.removeLayer(layer);
+      }
+    );
+
+    floodZonesRef.current = [];
+    hotspotMarkersRef.current = [];
+    drainageMarkersRef.current = [];
+    drainageLinesRef.current = [];
+
+    /*
+     * ==================================================
+     * FLOOD RISK ZONES
+     * ==================================================
+     */
+
+    if (
+      state.activeLayers.has("floodRisk")
+    ) {
+      data.floodZones.forEach(
+        (zone) => {
+          const points = zone.points
+            .split(" ")
+            .map((point) => {
+              const [x, y] =
+                point
+                  .split(",")
+                  .map(Number);
+
+              return prototypeToLatLng(
+                x,
+                y,
+                city
+              );
+            });
+
+          const polygon =
+            L.polygon(
+              points,
+              {
+                color:
+                  riskColors[
+                    zone.risk
+                  ],
+                weight: 1.5,
+                opacity: 0.8,
+                fillColor:
+                  riskColors[
+                    zone.risk
+                  ],
+                fillOpacity: 0.25,
+              }
+            );
+
+          polygon.bindTooltip(
+            `${zone.label} • ${zone.risk}`,
+            {
+              direction: "top",
+            }
+          );
+
+          polygon.addTo(map);
+
+          floodZonesRef.current.push(
+            polygon
+          );
+        }
+      );
+    }
+
+    /*
+     * ==================================================
+     * FLOOD HOTSPOTS
+     * ==================================================
+     */
+
+    if (
+      state.activeLayers.has("floodRisk")
+    ) {
+      data.hotspots.forEach(
+        (hotspot) => {
+          const position =
+            prototypeToLatLng(
+              hotspot.x,
+              hotspot.y,
+              city
+            );
+
+          const marker =
+            L.circleMarker(
+              position,
+              {
+                radius: 9,
+                color: "#ffffff",
+                weight: 2,
+                fillColor:
+                  riskColors[
+                    hotspot.risk
+                  ],
+                fillOpacity: 0.95,
+              }
+            );
+
+          marker.bindTooltip(
+            `${hotspot.label} • ${hotspot.risk}`,
+            {
+              direction: "top",
+            }
+          );
+
+          marker.on(
+            "click",
+            () => {
+              dispatch({
+                type:
+                  "SELECT_HOTSPOT",
+                id: hotspot.id,
+              });
+            }
+          );
+
+          marker.addTo(map);
+
+          hotspotMarkersRef.current.push(
+            marker
+          );
+        }
+      );
+    }
+
+    /*
+     * ==================================================
+     * DRAINAGE NETWORK
+     * ==================================================
+     */
+
+    if (
+      state.activeLayers.has("drainage")
+    ) {
+      const nodePositions =
+        new Map<
+          string,
+          [number, number]
+        >();
+
+      /*
+       * Store every drainage node's
+       * geographic position.
+       */
+
+      data.drainageNodes.forEach(
+        (node) => {
+          nodePositions.set(
+            node.id,
+            prototypeToLatLng(
+              node.x,
+              node.y,
+              city
+            )
+          );
+        }
+      );
+
+      /*
+       * Draw connections between
+       * drainage nodes.
+       */
+
+      data.drainageEdges.forEach(
+        (edge) => {
+          const from =
+            nodePositions.get(
+              edge.from
+            );
+
+          const to =
+            nodePositions.get(
+              edge.to
+            );
+
+          if (!from || !to) return;
+
+          const line =
+            L.polyline(
+              [from, to],
+              {
+                color: "#6B7280",
+                weight: 3,
+                opacity: 0.65,
+              }
+            );
+
+          line.addTo(map);
+
+          drainageLinesRef.current.push(
+            line
+          );
+        }
+      );
+
+      /*
+       * ==================================================
+       * DRAINAGE NODES
+       * ==================================================
+       */
+
+      const nodeColors: Record<
+        string,
+        string
+      > = {
+        Normal: "#16A34A",
+        Warning: "#F59E0B",
+        Overloaded: "#DC2626",
+        Blocked: "#991B1B",
+        Backflow: "#7C3AED",
+      };
+
+      data.drainageNodes.forEach(
+        (node) => {
+          const position =
+            prototypeToLatLng(
+              node.x,
+              node.y,
+              city
+            );
+
+          const marker =
+            L.circleMarker(
+              position,
+              {
+                radius: 7,
+                color: "#ffffff",
+                weight: 2,
+                fillColor:
+                  nodeColors[
+                    node.status
+                  ] ||
+                  "#6B7280",
+                fillOpacity: 1,
+              }
+            );
+
+          marker.bindTooltip(
+            `${node.label} • ${node.status}`,
+            {
+              direction: "top",
+            }
+          );
+
+          marker.on(
+            "click",
+            () => {
+              dispatch({
+                type:
+                  "SELECT_DRAINAGE_NODE",
+                id: node.id,
+              });
+            }
+          );
+
+          marker.addTo(map);
+
+          drainageMarkersRef.current.push(
+            marker
+          );
+        }
+      );
+    }
+  }, [
+    city,
+    state.activeLayers,
+    state.timeStep,
+    dispatch,
+  ]);
 
   /*
    * ==================================================
    * MAP CONTAINER
    * ==================================================
    */
+
   return (
     <div
       ref={mapContainer}
