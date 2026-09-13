@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Navigation, AlertTriangle, CheckCircle, Clock, Droplets, MapPin } from "lucide-react";
 import { useApp } from "../state/AppContext";
 import { cityData, RiskLevel } from "../data/mockData";
 import StatusBadge from "../components/ui/StatusBadge";
-
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 const riskColor: Record<RiskLevel, string> = {
   CRITICAL: "#DC2626",
   HIGH: "#D97706",
@@ -20,84 +21,218 @@ const ROUTE_PATHS = [
   "M100,420 L150,390 L200,360 L240,320 L300,290 L360,270 L420,240 L490,210 L580,190 L660,160",
 ];
 
-function RouteMap({ selectedRoute }: { selectedRoute: string | null }) {
+function RouteMap({
+  selectedRoute,
+  origin,
+  destination,
+  showRoutes,
+}: {
+  selectedRoute: string | null;
+  origin: string;
+  destination: string;
+  showRoutes: boolean;
+}) {
   const { state } = useApp();
-  const data = cityData[state.city];
+
+  const mapRef = useRef<HTMLDivElement | null>(null);
+  const leafletMap = useRef<L.Map | null>(null);
+
+  const originMarker = useRef<L.Marker | null>(null);
+  const destinationMarker = useRef<L.Marker | null>(null);
+
+  const routeLines = useRef<L.Polyline[]>([]);
+
+  const CITY_LOCATIONS: Record<string, [number, number]> = {
+    delhi: [28.6139, 77.2090],
+    mumbai: [19.0760, 72.8777],
+    chennai: [13.0827, 80.2707],
+  };
+
+  const LOCATION_COORDS: Record<string, [number, number]> = {
+    "IGDTUW": [28.6655, 77.2322],
+    "Connaught Place": [28.6315, 77.2167],
+    "India Gate": [28.6129, 77.2295],
+    "Delhi Airport": [28.5562, 77.1000],
+  };
+  
+  const createCurvedRoute = (
+  start: [number, number],
+  control: [number, number],
+  end: [number, number]
+): [number, number][] => {
+  const points: [number, number][] = [];
+
+  for (let i = 0; i <= 40; i++) {
+    const t = i / 40;
+
+    const lat =
+      (1 - t) * (1 - t) * start[0] +
+      2 * (1 - t) * t * control[0] +
+      t * t * end[0];
+
+    const lng =
+      (1 - t) * (1 - t) * start[1] +
+      2 * (1 - t) * t * control[1] +
+      t * t * end[1];
+
+    points.push([lat, lng]);
+  }
+
+  return points;
+};
+
+  // Create the map
+  useEffect(() => {
+    if (!mapRef.current || leafletMap.current) return;
+
+    const center =
+      CITY_LOCATIONS[state.city] || CITY_LOCATIONS.delhi;
+
+    const map = L.map(mapRef.current).setView(center, 11);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors",
+    }).addTo(map);
+
+    leafletMap.current = map;
+
+    return () => {
+      map.remove();
+      leafletMap.current = null;
+      originMarker.current = null;
+      destinationMarker.current = null;
+      routeLines.current = [];
+    };
+  }, [state.city]);
+
+  // Update markers and routes whenever the dropdown selection changes
+  useEffect(() => {
+    const map = leafletMap.current;
+
+    if (!map) return;
+
+    const originCoords = LOCATION_COORDS[origin];
+    const destinationCoords = LOCATION_COORDS[destination];
+
+    if (!originCoords || !destinationCoords) return;
+
+    // Remove old markers
+    if (originMarker.current) {
+      originMarker.current.remove();
+    }
+
+    if (destinationMarker.current) {
+      destinationMarker.current.remove();
+    }
+
+    // Remove old routes
+    routeLines.current.forEach(line => line.remove());
+    routeLines.current = [];
+
+    // Origin marker
+    originMarker.current = L.marker(originCoords)
+      .addTo(map)
+      .bindPopup(`<b>Starting Location</b><br>${origin}`);
+
+    // Destination marker
+    destinationMarker.current = L.marker(destinationCoords)
+      .addTo(map)
+      .bindPopup(`<b>Destination</b><br>${destination}`);
+
+    originMarker.current.openPopup();
+
+    // Show three routes only after Find Safe Routes
+    if (showRoutes) {
+      const [oLat, oLng] = originCoords;
+      const [dLat, dLng] = destinationCoords;
+
+      // Green — fastest / recommended
+      const route1Points = createCurvedRoute(
+  [oLat, oLng],
+  [
+    (oLat + dLat) / 2 + 0.015,
+    (oLng + dLng) / 2 - 0.010,
+  ],
+  [dLat, dLng]
+);
+
+const route1 = L.polyline(route1Points, {
+  color: "#16A34A",
+  weight: selectedRoute === "route-1" ? 7 : 5,
+  opacity:
+    selectedRoute && selectedRoute !== "route-1" ? 0.3 : 0.95,
+}).addTo(map);
+
+
+const route2Points = createCurvedRoute(
+  [oLat, oLng],
+  [
+    (oLat + dLat) / 2 + 0.030,
+    (oLng + dLng) / 2 + 0.020,
+  ],
+  [dLat, dLng]
+);
+
+const route2 = L.polyline(route2Points, {
+  color: "#F97316",
+  weight: selectedRoute === "route-2" ? 7 : 5,
+  opacity:
+    selectedRoute && selectedRoute !== "route-2" ? 0.3 : 0.9,
+}).addTo(map);
+
+
+const route3Points = createCurvedRoute(
+  [oLat, oLng],
+  [
+    (oLat + dLat) / 2 - 0.025,
+    (oLng + dLng) / 2 + 0.015,
+  ],
+  [dLat, dLng]
+);
+
+const route3 = L.polyline(route3Points, {
+  color: "#DC2626",
+  weight: selectedRoute === "route-3" ? 7 : 5,
+  opacity:
+    selectedRoute && selectedRoute !== "route-3" ? 0.3 : 0.9,
+  dashArray: "8, 6",
+}).addTo(map);
+      routeLines.current = [route1, route2, route3];
+
+      // Fit map around both locations
+      map.fitBounds(
+        L.latLngBounds([originCoords, destinationCoords]),
+        {
+          padding: [50, 50],
+        }
+      );
+    }
+  }, [origin, destination, showRoutes, selectedRoute, state.city]);
 
   return (
-    <div className="bg-[#EAE8E3] rounded-[3px] border border-warm-200 overflow-hidden">
-      <svg viewBox="0 0 780 480" className="w-full" style={{ minHeight: "220px" }}>
-        <rect width="780" height="480" fill="#EAE8E3" />
-        <defs>
-          <pattern id="routeGrid" width="40" height="40" patternUnits="userSpaceOnUse">
-            <rect width="40" height="40" fill="#E6E3DD" />
-            <rect x="2" y="2" width="36" height="36" fill="#EDEBE7" />
-          </pattern>
-        </defs>
-        <rect width="780" height="480" fill="url(#routeGrid)" />
+    <div>
+      <div
+        ref={mapRef}
+        className="w-full rounded-[3px] border border-warm-200 overflow-hidden"
+        style={{ height: "480px" }}
+      />
 
-        {/* Roads */}
-        {data.roads.map((road, i) => (
-          <path key={i} d={road.d} stroke={road.major ? "#D4CEC7" : "#DEDAD5"} strokeWidth={road.major ? 4 : 2} fill="none" />
-        ))}
+      <div className="mt-2 flex flex-wrap gap-4 text-[11px] text-warm-500">
+        <div className="flex items-center gap-1.5">
+          <div className="w-5 border-t-[3px] border-green-600" />
+          <span>Fastest / Recommended</span>
+        </div>
 
-        {/* Water body */}
-        <polygon points={data.waterBody} fill="rgba(37,99,235,0.15)" stroke="rgba(37,99,235,0.35)" strokeWidth="1.5" />
+        <div className="flex items-center gap-1.5">
+          <div className="w-5 border-t-[3px] border-orange-500" />
+          <span>Moderate risk</span>
+        </div>
 
-        {/* Flood zones */}
-        {data.floodZones.map(fz => (
-          <polygon
-            key={fz.id}
-            points={fz.points}
-            fill={fz.risk === "CRITICAL" ? "rgba(220,38,38,0.15)" : "rgba(217,119,6,0.12)"}
-            stroke={fz.risk === "CRITICAL" ? "rgba(220,38,38,0.5)" : "rgba(217,119,6,0.4)"}
-            strokeWidth="1"
-            strokeDasharray="3,2"
-          />
-        ))}
-
-        {/* All routes (dimmed when one selected) */}
-        {data.routes.map((route, i) => {
-          const isSelected = selectedRoute === route.id;
-          const isOther = selectedRoute !== null && !isSelected;
-          return (
-            <path
-              key={route.id}
-              d={ROUTE_PATHS[i] || ROUTE_PATHS[0]}
-              stroke={routePathColors[i]}
-              strokeWidth={isSelected ? 4 : isOther ? 1.5 : 2.5}
-              strokeDasharray={route.recommended ? "0" : "7,4"}
-              fill="none"
-              opacity={isOther ? 0.25 : 1}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          );
-        })}
-
-        {/* Origin / Destination markers */}
-        <circle cx="100" cy="420" r="8" fill="#8B1A2A" />
-        <circle cx="100" cy="420" r="5" fill="white" />
-        <text x="115" y="425" fontSize="10" fill="#4A4540" fontFamily="Inter, sans-serif">{data.origin}</text>
-
-        <circle cx="660" cy="140" r="8" fill="#16A34A" />
-        <circle cx="660" cy="140" r="5" fill="white" />
-        <text x="640" y="130" fontSize="10" fill="#4A4540" fontFamily="Inter, sans-serif" textAnchor="end">{data.destination}</text>
-
-        {/* Route labels */}
-        {data.routes.map((route, i) => {
-          const path = ROUTE_PATHS[i];
-          if (!path) return null;
-          const midX = [350, 360, 350][i];
-          const midY = [260, 280, 300][i];
-          return (
-            <g key={`lbl-${route.id}`}>
-              <rect x={midX - 16} y={midY - 10} width="32" height="16" fill="white" opacity="0.9" rx="2" />
-              <text x={midX} y={midY + 2} textAnchor="middle" fontSize="9" fill={routePathColors[i]} fontFamily="DM Mono, monospace" fontWeight="500">{route.label}</text>
-            </g>
-          );
-        })}
-      </svg>
+        <div className="flex items-center gap-1.5">
+          <div className="w-5 border-t-[3px] border-red-600 border-dashed" />
+          <span>Not advisable</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -105,8 +240,8 @@ function RouteMap({ selectedRoute }: { selectedRoute: string | null }) {
 export default function SafeRouteScreen() {
   const { state, dispatch } = useApp();
   const data = cityData[state.city];
-  const [origin, setOrigin] = useState(data.origin);
-  const [destination, setDestination] = useState(data.destination);
+  const [origin, setOrigin] = useState("IGDTUW");
+  const [destination, setDestination] =  useState("India Gate");
   const [searched, setSearched] = useState(true);
 
   return (
@@ -123,24 +258,28 @@ export default function SafeRouteScreen() {
             <label className="block text-[11px] font-mono text-warm-400 uppercase tracking-wide mb-1.5">Origin</label>
             <div className="relative">
               <MapPin size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-maroon-600" />
-              <input
-                type="text"
-                value={origin}
-                onChange={e => setOrigin(e.target.value)}
-                className="w-full border border-warm-200 rounded-[3px] pl-8 pr-3 py-2 text-sm text-warm-800 focus:border-maroon-600 focus:outline-none"
-              />
+              <select
+  value={origin}
+  onChange={e => setOrigin(e.target.value)}
+  className="w-full border border-warm-200 rounded-[3px] pl-8 pr-3 py-2 text-sm text-warm-800 bg-white focus:border-maroon-600 focus:outline-none"
+>
+  <option value="IGDTUW">IGDTUW</option>
+  <option value="Connaught Place">Connaught Place</option>
+</select>
             </div>
           </div>
           <div className="flex-1">
             <label className="block text-[11px] font-mono text-warm-400 uppercase tracking-wide mb-1.5">Destination</label>
             <div className="relative">
               <MapPin size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-green-600" />
-              <input
-                type="text"
-                value={destination}
-                onChange={e => setDestination(e.target.value)}
-                className="w-full border border-warm-200 rounded-[3px] pl-8 pr-3 py-2 text-sm text-warm-800 focus:border-maroon-600 focus:outline-none"
-              />
+              <select
+  value={destination}
+  onChange={e => setDestination(e.target.value)}
+  className="w-full border border-warm-200 rounded-[3px] pl-8 pr-3 py-2 text-sm text-warm-800 bg-white focus:border-maroon-600 focus:outline-none"
+>
+  <option value="India Gate">India Gate</option>
+  <option value="Delhi Airport">Delhi Airport</option>
+</select>
             </div>
           </div>
           <button
@@ -157,7 +296,12 @@ export default function SafeRouteScreen() {
         <div className="flex flex-col lg:flex-row gap-6">
           {/* Map */}
           <div className="flex-1">
-            <RouteMap selectedRoute={state.selectedRoute} />
+            <RouteMap
+  selectedRoute={state.selectedRoute}
+  origin={origin}
+  destination={destination}
+  showRoutes={searched}
+/>
             <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-warm-500">
               <div className="flex items-center gap-1.5"><div className="w-5 border-t-2 border-green-600" /><span>Recommended</span></div>
               <div className="flex items-center gap-1.5"><div className="w-5 border-t-2 border-dashed border-amber-600" /><span>Not recommended</span></div>
@@ -191,7 +335,9 @@ export default function SafeRouteScreen() {
                         <span>Recommended</span>
                       </div>
                     )}
-                    {!route.recommended && route.floodExposure === "CRITICAL" || route.floodExposure === "HIGH" ? (
+                   {!route.recommended &&
+(route.floodExposure === "CRITICAL" ||
+route.floodExposure === "HIGH") ? (
                       <div className="flex items-center gap-1 text-red-600 text-[11px] font-medium">
                         <AlertTriangle size={12} />
                         <span>Not advised</span>

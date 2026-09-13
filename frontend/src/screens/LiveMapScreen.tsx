@@ -77,7 +77,7 @@ export default function LiveMapScreen() {
       <div className="flex flex-1 relative overflow-hidden">
         {/* SVG Map */}
         <div className="flex-1 relative bg-[#EAE8E3] overflow-hidden">
-         <MapView />
+         <MapView/>
 
           {/* Rainfall intensity indicator */}
           {state.activeLayers.has("rainfall") && (
