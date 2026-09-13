@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Plus,
   Filter,
@@ -15,6 +15,7 @@ import {
   RefreshCw,
   Droplets,
 } from "lucide-react";
+
 import { useApp } from "../../state/AppContext";
 import {
   cityData,
@@ -25,12 +26,31 @@ import {
 } from "../../data/mockData";
 import StatusBadge from "../../components/ui/StatusBadge";
 
+/* =========================================================
+   CONFIG
+   ========================================================= */
+
 const FILTERS = [
   "All",
   "CRITICAL",
   "HIGH",
   "MODERATE",
   "LOW",
+] as const;
+
+const ISSUE_TYPES: IncidentType[] = [
+  "Blocked Drain",
+  "Waterlogging",
+  "Drain Overflow",
+  "Damaged Drain",
+  "Other",
+];
+
+const SEVERITIES: RiskLevel[] = [
+  "LOW",
+  "MODERATE",
+  "HIGH",
+  "CRITICAL",
 ];
 
 const typeIcon: Record<string, string> = {
@@ -56,18 +76,21 @@ const statusMeta: Record<
     bg: "bg-red-50",
     border: "border-red-200",
   },
+
   "Under verification": {
     icon: Clock,
     color: "text-amber-600",
     bg: "bg-amber-50",
     border: "border-amber-200",
   },
+
   Resolved: {
     icon: CheckCircle,
     color: "text-green-600",
     bg: "bg-green-50",
     border: "border-green-200",
   },
+
   Closed: {
     icon: CheckCircle,
     color: "text-warm-400",
@@ -75,6 +98,22 @@ const statusMeta: Record<
     border: "border-warm-200",
   },
 };
+
+/* =========================================================
+   HELPERS
+   ========================================================= */
+
+function getModelRelevance(type: IncidentType) {
+  return (
+    type === "Blocked Drain" ||
+    type === "Drain Overflow" ||
+    type === "Waterlogging"
+  );
+}
+
+/* =========================================================
+   INCIDENT ROW
+   ========================================================= */
 
 function IncidentRow({
   incident,
@@ -88,96 +127,100 @@ function IncidentRow({
   const meta = statusMeta[incident.status];
   const StatusIcon = meta.icon;
 
-  const affectsModel =
-    incident.type === "Blocked Drain" ||
-    incident.type === "Drain Overflow" ||
-    incident.type === "Waterlogging";
+  const affectsModel = getModelRelevance(incident.type);
 
   return (
     <div
-      className={`border-b border-warm-50 transition-colors ${
+      className={`border-b border-warm-100 transition-colors ${
         expanded
-          ? "bg-warm-50/50"
-          : "hover:bg-warm-50/30"
+          ? "bg-warm-50/60"
+          : "hover:bg-warm-50/40"
       }`}
     >
       <button
+        type="button"
         onClick={onToggle}
-        className="w-full text-left px-4 py-3 flex items-center gap-3"
+        className="w-full px-4 py-3 text-left"
       >
-        <div className="shrink-0 w-5 text-base leading-none">
-          {typeIcon[incident.type] ?? "📋"}
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-mono text-warm-400">
-              {incident.id}
-            </span>
-
-            <span className="text-sm font-medium text-warm-900 truncate">
-              {incident.location}
-            </span>
+        <div className="flex items-center gap-3">
+          <div className="w-5 shrink-0 text-base leading-none">
+            {typeIcon[incident.type] ?? "📋"}
           </div>
 
-          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-            <span className="text-[11px] text-warm-500">
-              {incident.type}
-            </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-mono text-warm-400">
+                {incident.id}
+              </span>
 
-            <span className="text-warm-300">·</span>
+              <span className="truncate text-sm font-medium text-warm-900">
+                {incident.location}
+              </span>
+            </div>
 
-            <span className="text-[11px] font-mono text-warm-400">
-              {incident.reportedAt}
-            </span>
+            <div className="mt-0.5 flex flex-wrap items-center gap-2">
+              <span className="text-[11px] text-warm-500">
+                {incident.type}
+              </span>
 
-            {affectsModel && (
-              <>
-                <span className="text-warm-300">·</span>
+              <span className="text-warm-300">
+                ·
+              </span>
 
-                <span className="text-[9px] font-mono uppercase text-maroon-700">
-                  Model relevant
-                </span>
-              </>
+              <span className="text-[11px] font-mono text-warm-400">
+                {incident.reportedAt}
+              </span>
+
+              {affectsModel && (
+                <>
+                  <span className="text-warm-300">
+                    ·
+                  </span>
+
+                  <span className="text-[9px] font-mono uppercase tracking-wide text-maroon-700">
+                    Model relevant
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2">
+            <StatusBadge
+              level={incident.severity}
+            />
+
+            <div className="hidden items-center gap-1 sm:flex">
+              <StatusIcon
+                size={13}
+                className={meta.color}
+              />
+
+              <span className="hidden text-[10px] font-mono text-warm-500 md:block">
+                {incident.status}
+              </span>
+            </div>
+
+            {expanded ? (
+              <ChevronUp
+                size={14}
+                className="text-warm-400"
+              />
+            ) : (
+              <ChevronDown
+                size={14}
+                className="text-warm-400"
+              />
             )}
           </div>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          <StatusBadge
-            level={incident.severity}
-          />
-
-          <div className="hidden items-center gap-1 sm:flex">
-            <StatusIcon
-              size={13}
-              className={meta.color}
-            />
-
-            <span className="text-[10px] text-warm-500 font-mono hidden md:block">
-              {incident.status}
-            </span>
-          </div>
-
-          {expanded ? (
-            <ChevronUp
-              size={14}
-              className="text-warm-400"
-            />
-          ) : (
-            <ChevronDown
-              size={14}
-              className="text-warm-400"
-            />
-          )}
         </div>
       </button>
 
       {expanded && (
         <div className="px-4 pb-4 pl-12">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
-              <div className="text-[10px] font-mono text-warm-400 mb-0.5">
+              <div className="mb-0.5 text-[10px] font-mono text-warm-400">
                 STATUS
               </div>
 
@@ -194,7 +237,7 @@ function IncidentRow({
             </div>
 
             <div>
-              <div className="text-[10px] font-mono text-warm-400 mb-0.5">
+              <div className="mb-0.5 text-[10px] font-mono text-warm-400">
                 IMPACT
               </div>
 
@@ -204,7 +247,7 @@ function IncidentRow({
             </div>
 
             <div>
-              <div className="text-[10px] font-mono text-warm-400 mb-0.5">
+              <div className="mb-0.5 text-[10px] font-mono text-warm-400">
                 MODEL RELEVANCE
               </div>
 
@@ -223,18 +266,18 @@ function IncidentRow({
           </div>
 
           {incident.description && (
-            <div className="bg-white border border-warm-200 rounded-sm px-3 py-2.5 text-xs text-warm-600 leading-relaxed">
+            <div className="mt-3 border border-warm-200 bg-white px-3 py-2.5 text-xs leading-relaxed text-warm-600">
               {incident.description}
             </div>
           )}
 
           {incident.status === "Confirmed" &&
             affectsModel && (
-              <div className="mt-3 bg-maroon-50 border border-maroon-200 px-3 py-3">
+              <div className="mt-3 border border-maroon-200 bg-maroon-50 px-3 py-3">
                 <div className="flex items-start gap-2">
                   <RefreshCw
                     size={14}
-                    className="text-maroon-700 mt-0.5 shrink-0"
+                    className="mt-0.5 shrink-0 text-maroon-700"
                   />
 
                   <div>
@@ -242,10 +285,11 @@ function IncidentRow({
                       Model feedback
                     </div>
 
-                    <p className="text-xs text-maroon-900 mt-1 leading-relaxed">
-                      This confirmed incident can be used
-                      as an infrastructure condition input
-                      when the drainage model is recalibrated.
+                    <p className="mt-1 text-xs leading-relaxed text-maroon-900">
+                      A confirmed drainage-related
+                      observation can be used as an
+                      infrastructure-condition input
+                      during model recalibration.
                     </p>
                   </div>
                 </div>
@@ -257,12 +301,18 @@ function IncidentRow({
   );
 }
 
+/* =========================================================
+   REPORT MODAL
+   ========================================================= */
+
 function ReportModal({
   onClose,
 }: {
   onClose: () => void;
 }) {
   const { dispatch, state } = useApp();
+
+  const city = cityData[state.city];
 
   const [type, setType] =
     useState<IncidentType>("Blocked Drain");
@@ -279,97 +329,141 @@ function ReportModal({
   const [submitted, setSubmitted] =
     useState<string | null>(null);
 
-  const handleSubmit = (
-    e: React.FormEvent
-  ) => {
-    e.preventDefault();
+  const [error, setError] =
+    useState("");
 
-    if (!location.trim()) return;
+  const [submitting, setSubmitting] =
+    useState(false);
+
+  const handleSubmit = (
+    event: React.FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+
+    const trimmedLocation =
+      location.trim();
+
+    const trimmedDescription =
+      description.trim();
+
+    if (!trimmedLocation) {
+      setError(
+        "Please enter the location of the issue.",
+      );
+      return;
+    }
+
+    if (trimmedLocation.length < 3) {
+      setError(
+        "Please provide a more specific location.",
+      );
+      return;
+    }
+
+    setError("");
+    setSubmitting(true);
 
     const refId = `IN-2026-${Math.floor(
-      Math.random() * 900 + 100
+      Math.random() * 9000 + 1000,
     )}`;
+
+    const reportedAt =
+      new Date().toLocaleTimeString(
+        "en-IN",
+        {
+          hour: "2-digit",
+          minute: "2-digit",
+        },
+      );
 
     const incident: Incident = {
       id: refId,
-      location: location.trim(),
+      location: trimmedLocation,
       type,
       severity,
-      reportedAt:
-        new Date().toLocaleTimeString(
-          "en-IN",
-          {
-            hour: "2-digit",
-            minute: "2-digit",
-          }
-        ),
+      reportedAt,
       status: "Under verification",
       impact: "Pending assessment",
-      description:
-        description.trim(),
+      description: trimmedDescription,
     };
 
+    /*
+     * Current prototype behaviour:
+     * The incident is stored in AppContext.
+     *
+     * Production behaviour:
+     * POST the report to the FastAPI backend,
+     * persist it in PostgreSQL/PostGIS,
+     * then make it available to authority operators.
+     */
     dispatch({
       type: "ADD_INCIDENT",
       incident,
     });
 
     setSubmitted(refId);
+    setSubmitting(false);
   };
+
+  /* ---------------- SUBMITTED STATE ---------------- */
 
   if (submitted) {
     return (
-      <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
-        <div className="bg-white border border-warm-200 rounded-sm p-8 max-w-sm w-full text-center shadow-xl">
-          <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+        <div className="w-full max-w-sm border border-warm-200 bg-white p-6 shadow-xl sm:p-8">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
             <CheckCircle
               size={24}
               className="text-green-600"
             />
           </div>
 
-          <div className="text-lg font-bold text-warm-900 mb-1">
-            Report Received
+          <div className="text-center">
+            <h2 className="text-lg font-bold text-warm-900">
+              Report Received
+            </h2>
+
+            <p className="mt-1 text-sm leading-5 text-warm-500">
+              Your observation has been added to
+              the local incident feed.
+            </p>
           </div>
 
-          <div className="text-sm text-warm-500 mb-4">
-            Your observation has been added to the
-            incident feed.
-          </div>
-
-          <div className="bg-warm-50 border border-warm-200 rounded-sm px-4 py-3 mb-4">
-            <div className="text-[11px] font-mono text-warm-400 mb-0.5">
-              REFERENCE
+          <div className="mt-5 border border-warm-200 bg-warm-50 px-4 py-3">
+            <div className="text-[10px] font-mono uppercase tracking-wide text-warm-400">
+              Reference
             </div>
 
-            <div className="font-mono font-bold text-maroon-700 text-base">
+            <div className="mt-1 font-mono text-base font-bold text-maroon-700">
               {submitted}
             </div>
 
-            <div className="text-xs text-warm-500 mt-1">
+            <div className="mt-1 text-xs text-warm-500">
               Status: Under verification
             </div>
           </div>
 
-          <div className="bg-blue-50 border border-blue-200 px-3 py-3 mb-5 text-left">
+          <div className="mt-4 border border-blue-200 bg-blue-50 px-3 py-3">
             <div className="flex items-start gap-2">
               <Activity
                 size={14}
-                className="text-blue-600 mt-0.5 shrink-0"
+                className="mt-0.5 shrink-0 text-blue-600"
               />
 
-              <p className="text-[11px] text-blue-800 leading-relaxed">
-                The report can be cross-referenced with
-                drainage conditions and other observations.
-                Confirmed infrastructure issues can become
-                inputs to the flood-model feedback loop.
+              <p className="text-[11px] leading-relaxed text-blue-800">
+                Authorities can review this observation
+                alongside rainfall, drainage and flood
+                intelligence. Confirmed infrastructure
+                issues can later contribute to the
+                model feedback loop.
               </p>
             </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="w-full py-2.5 bg-maroon-700 text-white text-sm font-medium rounded-sm hover:bg-maroon-800 transition-colors"
+            className="mt-5 w-full bg-maroon-700 py-2.5 text-sm font-medium text-white transition-colors hover:bg-maroon-800"
           >
             Done
           </button>
@@ -378,31 +472,38 @@ function ReportModal({
     );
   }
 
+  /* ---------------- FORM ---------------- */
+
   return (
     <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) {
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+      onClick={(event) => {
+        if (
+          event.target === event.currentTarget
+        ) {
           onClose();
         }
       }}
     >
-      <div className="bg-white border border-warm-200 rounded-sm w-full max-w-lg shadow-xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-warm-200">
+      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto border border-warm-200 bg-white shadow-xl">
+        {/* Header */}
+
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-warm-200 bg-white px-5 py-4">
           <div>
             <div className="text-base font-bold text-warm-900">
               Report an Issue
             </div>
 
-            <div className="text-xs text-warm-400">
-              {cityData[state.city].name} · Add a real-world
-              observation to the incident feed
+            <div className="mt-0.5 text-xs text-warm-400">
+              {city.name} · Share a real-world
+              observation
             </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="text-warm-400 hover:text-warm-700"
+            className="text-warm-400 transition-colors hover:text-warm-700"
             aria-label="Close report form"
           >
             <X size={18} />
@@ -411,32 +512,26 @@ function ReportModal({
 
         <form
           onSubmit={handleSubmit}
-          className="p-5 space-y-4"
+          className="space-y-5 p-5"
         >
           {/* Issue type */}
+
           <div>
-            <label className="block text-xs font-medium text-warm-700 mb-1.5">
+            <label className="mb-1.5 block text-xs font-medium text-warm-700">
               Issue Type
             </label>
 
             <select
               value={type}
-              onChange={(e) =>
+              onChange={(event) => {
                 setType(
-                  e.target.value as IncidentType
-                )
-              }
-              className="w-full border border-warm-200 rounded-sm px-3 py-2 text-sm text-warm-800 bg-white focus:border-maroon-600 focus:outline-none"
+                  event.target.value as IncidentType,
+                );
+                setError("");
+              }}
+              className="w-full border border-warm-200 bg-white px-3 py-2.5 text-sm text-warm-800 outline-none transition focus:border-maroon-600"
             >
-              {(
-                [
-                  "Blocked Drain",
-                  "Waterlogging",
-                  "Drain Overflow",
-                  "Damaged Drain",
-                  "Other",
-                ] as IncidentType[]
-              ).map((item) => (
+              {ISSUE_TYPES.map((item) => (
                 <option
                   key={item}
                   value={item}
@@ -448,8 +543,9 @@ function ReportModal({
           </div>
 
           {/* Location */}
+
           <div>
-            <label className="block text-xs font-medium text-warm-700 mb-1.5">
+            <label className="mb-1.5 block text-xs font-medium text-warm-700">
               Location{" "}
               <span className="text-red-500">
                 *
@@ -465,84 +561,109 @@ function ReportModal({
               <input
                 type="text"
                 value={location}
-                onChange={(e) =>
-                  setLocation(e.target.value)
-                }
-                placeholder={`e.g. Ring Road near ${cityData[state.city].name} Gate 3`}
-                className="w-full border border-warm-200 rounded-sm pl-9 pr-3 py-2 text-sm text-warm-800 placeholder:text-warm-300 focus:border-maroon-600 focus:outline-none"
+                onChange={(event) => {
+                  setLocation(event.target.value);
+                  setError("");
+                }}
+                placeholder={`e.g. Ring Road near ${city.name}`}
+                className="w-full border border-warm-200 py-2.5 pl-9 pr-3 text-sm text-warm-800 outline-none placeholder:text-warm-300 transition focus:border-maroon-600"
                 required
               />
             </div>
+
+            {error && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-red-600">
+                <AlertCircle size={13} />
+                {error}
+              </div>
+            )}
           </div>
 
           {/* Severity */}
+
           <div>
-            <label className="block text-xs font-medium text-warm-700 mb-1.5">
+            <label className="mb-1.5 block text-xs font-medium text-warm-700">
               Severity
             </label>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {(
-                [
-                  "LOW",
-                  "MODERATE",
-                  "HIGH",
-                  "CRITICAL",
-                ] as RiskLevel[]
-              ).map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() =>
-                    setSeverity(item)
-                  }
-                  className={`py-2 text-xs font-medium rounded-sm border transition-colors ${
-                    severity === item
-                      ? item === "CRITICAL"
-                        ? "bg-red-600 text-white border-red-600"
-                        : item === "HIGH"
-                        ? "bg-orange-600 text-white border-orange-600"
-                        : item === "MODERATE"
-                        ? "bg-amber-500 text-white border-amber-500"
-                        : "bg-green-600 text-white border-green-600"
-                      : "text-warm-600 border-warm-200 hover:bg-warm-50"
-                  }`}
-                >
-                  {item}
-                </button>
-              ))}
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {SEVERITIES.map((item) => {
+                const selected =
+                  severity === item;
+
+                let selectedClass =
+                  "bg-green-600 border-green-600";
+
+                if (item === "MODERATE") {
+                  selectedClass =
+                    "bg-amber-500 border-amber-500";
+                }
+
+                if (item === "HIGH") {
+                  selectedClass =
+                    "bg-orange-600 border-orange-600";
+                }
+
+                if (item === "CRITICAL") {
+                  selectedClass =
+                    "bg-red-600 border-red-600";
+                }
+
+                return (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() =>
+                      setSeverity(item)
+                    }
+                    className={`border py-2 text-xs font-medium transition-colors ${
+                      selected
+                        ? `${selectedClass} text-white`
+                        : "border-warm-200 text-warm-600 hover:bg-warm-50"
+                    }`}
+                  >
+                    {item}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
           {/* Description */}
+
           <div>
-            <label className="block text-xs font-medium text-warm-700 mb-1.5">
+            <label className="mb-1.5 block text-xs font-medium text-warm-700">
               Description{" "}
-              <span className="text-warm-400 font-normal">
+              <span className="font-normal text-warm-400">
                 (optional)
               </span>
             </label>
 
             <textarea
               value={description}
-              onChange={(e) =>
+              onChange={(event) =>
                 setDescription(
-                  e.target.value
+                  event.target.value,
                 )
               }
               rows={4}
               placeholder="Describe what you observed — water depth, blockage, affected road, overflow..."
-              className="w-full border border-warm-200 rounded-sm px-3 py-2 text-sm text-warm-800 placeholder:text-warm-300 focus:border-maroon-600 focus:outline-none resize-none"
+              className="w-full resize-none border border-warm-200 px-3 py-2.5 text-sm text-warm-800 outline-none placeholder:text-warm-300 transition focus:border-maroon-600"
             />
+
+            <div className="mt-1 text-right text-[10px] font-mono text-warm-400">
+              {description.length}/500
+            </div>
           </div>
 
-          {/* Workflow explanation */}
-          <div className="bg-warm-50 border border-warm-200 px-3 py-3">
-            <div className="text-[10px] font-mono uppercase tracking-wide text-warm-500 mb-2">
+          {/* Workflow */}
+
+          <div className="border border-warm-200 bg-warm-50 px-3 py-3">
+            <div className="mb-2 text-[10px] font-mono uppercase tracking-wide text-warm-500">
               What happens next
             </div>
 
-            <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="flex flex-wrap items-center gap-1.5">
               {[
                 "Report",
                 "Verify",
@@ -557,7 +678,7 @@ function ReportModal({
                     className={`px-2 py-1 text-[9px] font-mono ${
                       index === 0
                         ? "bg-maroon-700 text-white"
-                        : "bg-white border border-warm-200 text-warm-500"
+                        : "border border-warm-200 bg-white text-warm-500"
                     }`}
                   >
                     {step}
@@ -574,21 +695,45 @@ function ReportModal({
             </div>
           </div>
 
+          {/* Prototype notice */}
+
+          <div className="border border-amber-200 bg-amber-50 px-3 py-3">
+            <div className="flex items-start gap-2">
+              <Clock
+                size={14}
+                className="mt-0.5 shrink-0 text-amber-600"
+              />
+
+              <p className="text-[11px] leading-relaxed text-amber-800">
+                This prototype stores the report in
+                the current frontend session. Backend
+                persistence and authority synchronization
+                will be connected through the FastAPI
+                incident API.
+              </p>
+            </div>
+          </div>
+
           {/* Actions */}
-          <div className="pt-1 flex gap-3">
+
+          <div className="flex gap-3 pt-1">
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 py-2.5 border border-warm-200 text-sm text-warm-600 rounded-sm hover:bg-warm-50 transition-colors"
+              disabled={submitting}
+              className="flex-1 border border-warm-200 py-2.5 text-sm text-warm-600 transition-colors hover:bg-warm-50 disabled:opacity-50"
             >
               Cancel
             </button>
 
             <button
               type="submit"
-              className="flex-1 py-2.5 bg-maroon-700 text-white text-sm font-medium rounded-sm hover:bg-maroon-800 transition-colors"
+              disabled={submitting}
+              className="flex-1 bg-maroon-700 py-2.5 text-sm font-medium text-white transition-colors hover:bg-maroon-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Submit Report
+              {submitting
+                ? "Submitting..."
+                : "Submit Report"}
             </button>
           </div>
         </form>
@@ -596,6 +741,10 @@ function ReportModal({
     </div>
   );
 }
+
+/* =========================================================
+   MAIN SCREEN
+   ========================================================= */
 
 export default function ReportsScreen() {
   const { state, dispatch } = useApp();
@@ -606,109 +755,140 @@ export default function ReportsScreen() {
   const [modalOpen, setModalOpen] =
     useState(false);
 
+  const city = cityData[state.city];
+
   const incidents = state.incidents;
+
   const filter = state.incidentFilter;
 
-  const filtered =
-    filter === "All"
-      ? incidents
-      : incidents.filter(
-          (incident) =>
-            incident.severity === filter
-        );
+  /* ---------------- FILTERED INCIDENTS ---------------- */
 
-  const counts: Record<
-    string,
-    number
-  > = {
-    All: incidents.length,
-  };
+  const filteredIncidents = useMemo(() => {
+    if (filter === "All") {
+      return incidents;
+    }
 
-  (
-    [
-      "CRITICAL",
-      "HIGH",
-      "MODERATE",
-      "LOW",
-    ] as RiskLevel[]
-  ).forEach((level) => {
-    counts[level] = incidents.filter(
+    return incidents.filter(
       (incident) =>
-        incident.severity === level
-    ).length;
-  });
+        incident.severity === filter,
+    );
+  }, [filter, incidents]);
 
-  const statusCounts = {
-    verification: incidents.filter(
-      (incident) =>
-        incident.status ===
-        "Under verification"
-    ).length,
+  /* ---------------- COUNTS ---------------- */
 
-    confirmed: incidents.filter(
-      (incident) =>
-        incident.status === "Confirmed"
-    ).length,
+  const counts = useMemo(() => {
+    return {
+      All: incidents.length,
 
-    resolved: incidents.filter(
-      (incident) =>
-        incident.status === "Resolved" ||
-        incident.status === "Closed"
-    ).length,
-  };
+      CRITICAL: incidents.filter(
+        (incident) =>
+          incident.severity === "CRITICAL",
+      ).length,
+
+      HIGH: incidents.filter(
+        (incident) =>
+          incident.severity === "HIGH",
+      ).length,
+
+      MODERATE: incidents.filter(
+        (incident) =>
+          incident.severity === "MODERATE",
+      ).length,
+
+      LOW: incidents.filter(
+        (incident) =>
+          incident.severity === "LOW",
+      ).length,
+    };
+  }, [incidents]);
+
+  const statusCounts = useMemo(
+    () => ({
+      verification: incidents.filter(
+        (incident) =>
+          incident.status ===
+          "Under verification",
+      ).length,
+
+      confirmed: incidents.filter(
+        (incident) =>
+          incident.status === "Confirmed",
+      ).length,
+
+      resolved: incidents.filter(
+        (incident) =>
+          incident.status === "Resolved" ||
+          incident.status === "Closed",
+      ).length,
+    }),
+    [incidents],
+  );
 
   const modelRelevantReports =
-    incidents.filter(
-      (incident) =>
-        incident.type ===
-          "Blocked Drain" ||
-        incident.type ===
-          "Drain Overflow" ||
-        incident.type ===
-          "Waterlogging"
-    ).length;
-
-  const priorityReports =
-    incidents.filter(
-      (incident) =>
-        incident.severity ===
-          "CRITICAL" ||
-        incident.severity === "HIGH"
+    useMemo(
+      () =>
+        incidents.filter((incident) =>
+          getModelRelevance(
+            incident.type,
+          ),
+        ).length,
+      [incidents],
     );
 
+  const priorityReports = useMemo(
+    () =>
+      incidents.filter(
+        (incident) =>
+          incident.severity === "CRITICAL" ||
+          incident.severity === "HIGH",
+      ),
+    [incidents],
+  );
+
+  /* =======================================================
+     RENDER
+     ======================================================= */
+
   return (
-    <div className="max-w-6xl mx-auto px-4 py-6 md:py-8">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between mb-6 gap-4">
+    <div className="mx-auto max-w-6xl px-4 py-6 md:py-8">
+      {/* ===================================================
+          HEADER
+          =================================================== */}
+
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="text-[10px] font-mono uppercase tracking-wider text-warm-500 mb-1">
+          <div className="mb-1 text-[10px] font-mono uppercase tracking-wider text-warm-500">
             Citizen intelligence
           </div>
 
-          <h1 className="text-xl md:text-2xl font-bold text-warm-900">
+          <h1 className="text-xl font-bold text-warm-900 md:text-2xl">
             Reports & Incidents —{" "}
-            {cityData[state.city].name}
+            {city.name}
           </h1>
 
-          <p className="text-sm text-warm-500 mt-1">
-            Real-world observations that can
-            strengthen flood nowcasting
+          <p className="mt-1 text-sm text-warm-500">
+            Report real-world conditions that can
+            strengthen flood nowcasting.
           </p>
         </div>
 
         <button
+          type="button"
           onClick={() => setModalOpen(true)}
-          className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-maroon-700 text-white text-sm font-medium rounded-sm hover:bg-maroon-800 transition-colors shrink-0"
+          className="flex shrink-0 items-center justify-center gap-1.5 bg-maroon-700 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-maroon-800"
         >
           <Plus size={14} />
           Report an Issue
         </button>
       </div>
 
-      {/* Incident overview */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <div className="bg-white border border-warm-200 p-4">
-          <div className="flex items-center gap-2 mb-2">
+      {/* ===================================================
+          OVERVIEW
+          =================================================== */}
+
+      <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div className="border border-warm-200 bg-white p-4">
+          <div className="mb-2 flex items-center gap-2">
             <AlertCircle
               size={14}
               className="text-warm-400"
@@ -719,17 +899,17 @@ export default function ReportsScreen() {
             </span>
           </div>
 
-          <div className="text-2xl font-bold font-mono text-warm-900">
+          <div className="font-mono text-2xl font-bold text-warm-900">
             {incidents.length}
           </div>
 
-          <div className="text-[10px] text-warm-400 mt-1">
-            Recorded incidents
+          <div className="mt-1 text-[10px] text-warm-400">
+            Recorded observations
           </div>
         </div>
 
-        <div className="bg-white border border-warm-200 p-4">
-          <div className="flex items-center gap-2 mb-2">
+        <div className="border border-warm-200 bg-white p-4">
+          <div className="mb-2 flex items-center gap-2">
             <Clock
               size={14}
               className="text-amber-500"
@@ -740,17 +920,17 @@ export default function ReportsScreen() {
             </span>
           </div>
 
-          <div className="text-2xl font-bold font-mono text-amber-700">
+          <div className="font-mono text-2xl font-bold text-amber-700">
             {statusCounts.verification}
           </div>
 
-          <div className="text-[10px] text-warm-400 mt-1">
+          <div className="mt-1 text-[10px] text-warm-400">
             Awaiting confirmation
           </div>
         </div>
 
-        <div className="bg-white border border-warm-200 p-4">
-          <div className="flex items-center gap-2 mb-2">
+        <div className="border border-warm-200 bg-white p-4">
+          <div className="mb-2 flex items-center gap-2">
             <ShieldAlert
               size={14}
               className="text-red-500"
@@ -761,17 +941,17 @@ export default function ReportsScreen() {
             </span>
           </div>
 
-          <div className="text-2xl font-bold font-mono text-red-700">
+          <div className="font-mono text-2xl font-bold text-red-700">
             {statusCounts.confirmed}
           </div>
 
-          <div className="text-[10px] text-warm-400 mt-1">
+          <div className="mt-1 text-[10px] text-warm-400">
             Verified incidents
           </div>
         </div>
 
-        <div className="bg-white border border-warm-200 p-4">
-          <div className="flex items-center gap-2 mb-2">
+        <div className="border border-warm-200 bg-white p-4">
+          <div className="mb-2 flex items-center gap-2">
             <Activity
               size={14}
               className="text-maroon-600"
@@ -782,19 +962,22 @@ export default function ReportsScreen() {
             </span>
           </div>
 
-          <div className="text-2xl font-bold font-mono text-maroon-700">
+          <div className="font-mono text-2xl font-bold text-maroon-700">
             {modelRelevantReports}
           </div>
 
-          <div className="text-[10px] text-warm-400 mt-1">
-            Potential flood-model inputs
+          <div className="mt-1 text-[10px] text-warm-400">
+            Potential model inputs
           </div>
         </div>
       </div>
 
-      {/* Feedback loop */}
-      <div className="bg-white border border-warm-200 mb-6">
-        <div className="px-4 py-3 border-b border-warm-100">
+      {/* ===================================================
+          FEEDBACK LOOP
+          =================================================== */}
+
+      <div className="mb-6 border border-warm-200 bg-white">
+        <div className="border-b border-warm-100 px-4 py-3">
           <div className="flex items-center gap-2">
             <RefreshCw
               size={15}
@@ -806,15 +989,16 @@ export default function ReportsScreen() {
                 Citizen-to-model feedback loop
               </div>
 
-              <div className="text-[11px] text-warm-400 font-mono mt-0.5">
-                How field observations improve flood intelligence
+              <div className="mt-0.5 text-[11px] font-mono text-warm-400">
+                Field observations → verification →
+                model intelligence
               </div>
             </div>
           </div>
         </div>
 
         <div className="p-4">
-          <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-5">
             {[
               {
                 number: "01",
@@ -832,13 +1016,13 @@ export default function ReportsScreen() {
                 number: "03",
                 title: "Confirm",
                 description:
-                  "Verified blockage or flooding becomes trusted input.",
+                  "Verified conditions become trusted evidence.",
               },
               {
                 number: "04",
                 title: "Recalculate",
                 description:
-                  "Drainage and flood models can incorporate the condition.",
+                  "The drainage and flood models incorporate the condition.",
               },
               {
                 number: "05",
@@ -851,8 +1035,8 @@ export default function ReportsScreen() {
                 key={step.number}
                 className="relative"
               >
-                <div className="border border-warm-200 bg-warm-50 p-3 h-full">
-                  <div className="text-[9px] font-mono text-warm-400 mb-2">
+                <div className="h-full border border-warm-200 bg-warm-50 p-3">
+                  <div className="mb-2 text-[9px] font-mono text-warm-400">
                     {step.number}
                   </div>
 
@@ -860,7 +1044,7 @@ export default function ReportsScreen() {
                     {step.title}
                   </div>
 
-                  <p className="text-[10px] text-warm-500 leading-relaxed mt-1.5">
+                  <p className="mt-1.5 text-[10px] leading-relaxed text-warm-500">
                     {step.description}
                   </p>
                 </div>
@@ -869,7 +1053,7 @@ export default function ReportsScreen() {
                   array.length - 1 && (
                   <ArrowRight
                     size={13}
-                    className="hidden sm:block absolute -right-2 top-1/2 -translate-y-1/2 bg-white text-warm-300 z-10"
+                    className="absolute -right-2 top-1/2 z-10 hidden -translate-y-1/2 bg-white text-warm-300 sm:block"
                   />
                 )}
               </div>
@@ -878,10 +1062,13 @@ export default function ReportsScreen() {
         </div>
       </div>
 
-      {/* Priority incidents */}
+      {/* ===================================================
+          PRIORITY REPORTS
+          =================================================== */}
+
       {priorityReports.length > 0 && (
-        <div className="border border-red-200 bg-red-50 mb-6">
-          <div className="px-4 py-3 border-b border-red-100">
+        <div className="mb-6 border border-red-200 bg-red-50">
+          <div className="border-b border-red-100 px-4 py-3">
             <div className="flex items-center gap-2">
               <ShieldAlert
                 size={15}
@@ -893,8 +1080,8 @@ export default function ReportsScreen() {
                   Priority incidents
                 </div>
 
-                <div className="text-[11px] text-red-700 font-mono mt-0.5">
-                  High-severity reports requiring attention
+                <div className="mt-0.5 text-[11px] font-mono text-red-700">
+                  High-severity observations
                 </div>
               </div>
             </div>
@@ -905,13 +1092,14 @@ export default function ReportsScreen() {
               .slice(0, 3)
               .map((incident) => (
                 <button
+                  type="button"
                   key={incident.id}
                   onClick={() =>
                     setExpandedId(
-                      incident.id
+                      incident.id,
                     )
                   }
-                  className="w-full text-left px-4 py-3 hover:bg-red-100/50 transition-colors"
+                  className="w-full px-4 py-3 text-left transition-colors hover:bg-red-100/50"
                 >
                   <div className="flex items-center gap-3">
                     <div className="text-base">
@@ -920,16 +1108,16 @@ export default function ReportsScreen() {
                       ] ?? "📋"}
                     </div>
 
-                    <div className="flex-1 min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="text-xs font-mono text-red-700">
                         {incident.id}
                       </div>
 
-                      <div className="text-sm font-medium text-red-950 truncate">
+                      <div className="truncate text-sm font-medium text-red-950">
                         {incident.location}
                       </div>
 
-                      <div className="text-[10px] text-red-700 mt-0.5">
+                      <div className="mt-0.5 text-[10px] text-red-700">
                         {incident.type} ·{" "}
                         {incident.status}
                       </div>
@@ -947,8 +1135,11 @@ export default function ReportsScreen() {
         </div>
       )}
 
-      {/* Filters */}
-      <div className="flex items-center gap-2 mb-4 flex-wrap">
+      {/* ===================================================
+          FILTERS
+          =================================================== */}
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         <Filter
           size={13}
           className="text-warm-400"
@@ -956,6 +1147,7 @@ export default function ReportsScreen() {
 
         {FILTERS.map((item) => (
           <button
+            type="button"
             key={item}
             onClick={() =>
               dispatch({
@@ -963,27 +1155,31 @@ export default function ReportsScreen() {
                 filter: item,
               })
             }
-            className={`px-3 py-1.5 text-xs font-medium rounded-sm border transition-colors ${
+            className={`border px-3 py-1.5 text-xs font-medium transition-colors ${
               filter === item
-                ? "bg-maroon-700 text-white border-maroon-700"
-                : "text-warm-600 border-warm-200 hover:bg-warm-50"
+                ? "border-maroon-700 bg-maroon-700 text-white"
+                : "border-warm-200 text-warm-600 hover:bg-warm-50"
             }`}
           >
-            {item}{" "}
+            {item}
+
             {counts[item] !==
-            undefined ? (
-              <span className="opacity-70">
+              undefined && (
+              <span className="ml-1 opacity-70">
                 ({counts[item]})
               </span>
-            ) : null}
+            )}
           </button>
         ))}
       </div>
 
-      {/* Incidents list */}
-      <div className="bg-white border border-warm-200">
-        <div className="px-4 py-2.5 border-b border-warm-100 bg-warm-50">
-          <div className="grid grid-cols-[1.5rem_1fr_auto] gap-3 text-[10px] font-mono text-warm-400 uppercase tracking-wide">
+      {/* ===================================================
+          INCIDENT LIST
+          =================================================== */}
+
+      <div className="border border-warm-200 bg-white">
+        <div className="border-b border-warm-100 bg-warm-50 px-4 py-2.5">
+          <div className="grid grid-cols-[1.5rem_1fr_auto] gap-3 text-[10px] font-mono uppercase tracking-wide text-warm-400">
             <span />
 
             <span>
@@ -996,38 +1192,57 @@ export default function ReportsScreen() {
           </div>
         </div>
 
-        {filtered.length === 0 && (
-          <div className="px-4 py-8 text-center text-warm-400 text-sm">
-            No incidents matching this
-            filter.
+        {filteredIncidents.length ===
+          0 && (
+          <div className="px-4 py-10 text-center">
+            <AlertCircle
+              size={22}
+              className="mx-auto text-warm-300"
+            />
+
+            <div className="mt-2 text-sm font-medium text-warm-700">
+              No incidents found
+            </div>
+
+            <div className="mt-1 text-xs text-warm-400">
+              There are no reports matching
+              this severity filter.
+            </div>
           </div>
         )}
 
-        {filtered.map((incident) => (
-          <IncidentRow
-            key={incident.id}
-            incident={incident}
-            expanded={
-              expandedId === incident.id
-            }
-            onToggle={() =>
-              setExpandedId(
-                expandedId === incident.id
-                  ? null
-                  : incident.id
-              )
-            }
-          />
-        ))}
+        {filteredIncidents.map(
+          (incident) => (
+            <IncidentRow
+              key={incident.id}
+              incident={incident}
+              expanded={
+                expandedId ===
+                incident.id
+              }
+              onToggle={() =>
+                setExpandedId(
+                  expandedId ===
+                    incident.id
+                    ? null
+                    : incident.id,
+                )
+              }
+            />
+          ),
+        )}
       </div>
 
-      {/* Reporting guidance */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
-        <div className="bg-blue-50 border border-blue-200 px-4 py-3">
+      {/* ===================================================
+          REPORTING GUIDANCE
+          =================================================== */}
+
+      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div className="border border-blue-200 bg-blue-50 px-4 py-3">
           <div className="flex items-start gap-2.5">
             <Droplets
               size={15}
-              className="text-blue-600 mt-0.5 shrink-0"
+              className="mt-0.5 shrink-0 text-blue-600"
             />
 
             <div>
@@ -1035,21 +1250,21 @@ export default function ReportsScreen() {
                 What to report
               </div>
 
-              <p className="text-[11px] text-blue-800 mt-1 leading-relaxed">
+              <p className="mt-1 text-[11px] leading-relaxed text-blue-800">
                 Blocked drains, sudden waterlogging,
                 overflowing drains, damaged drainage
-                infrastructure, and unusually deep water
-                are especially useful observations.
+                infrastructure, and unusually deep
+                water are especially useful observations.
               </p>
             </div>
           </div>
         </div>
 
-        <div className="bg-warm-50 border border-warm-200 px-4 py-3">
+        <div className="border border-warm-200 bg-warm-50 px-4 py-3">
           <div className="flex items-start gap-2.5">
             <Activity
               size={15}
-              className="text-warm-500 mt-0.5 shrink-0"
+              className="mt-0.5 shrink-0 text-warm-500"
             />
 
             <div>
@@ -1057,26 +1272,35 @@ export default function ReportsScreen() {
                 Why reports matter
               </div>
 
-              <p className="text-[11px] text-warm-600 mt-1 leading-relaxed">
-                Field observations provide a second source
-                of evidence alongside rainfall, terrain and
-                drainage-model information.
+              <p className="mt-1 text-[11px] leading-relaxed text-warm-600">
+                Field observations provide another
+                evidence source alongside rainfall,
+                terrain and drainage-model information.
               </p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Model disclaimer */}
-      <div className="mt-4 px-3 py-2.5 border border-warm-200 bg-white">
-        <p className="text-[10px] text-warm-400 font-mono leading-relaxed">
-          PROTOTYPE WORKFLOW · Reports currently update the
-          frontend incident state. Backend verification,
-          drainage-condition updates and automatic model
-          recalibration will be connected in the integration
-          phase.
+      {/* ===================================================
+          PROTOTYPE STATUS
+          =================================================== */}
+
+      <div className="mt-4 border border-warm-200 bg-white px-3 py-2.5">
+        <p className="text-[10px] font-mono leading-relaxed text-warm-400">
+          PROTOTYPE WORKFLOW · Citizen reports currently
+          update the frontend incident state. The FastAPI
+          backend does not yet expose a persistent incident
+          endpoint. The planned production flow is:
+          citizen report → backend persistence → authority
+          verification → drainage-condition update →
+          model recalibration.
         </p>
       </div>
+
+      {/* ===================================================
+          MODAL
+          =================================================== */}
 
       {modalOpen && (
         <ReportModal

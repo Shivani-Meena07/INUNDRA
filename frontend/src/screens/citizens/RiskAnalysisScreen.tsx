@@ -1,5 +1,5 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApp } from "../../state/AppContext";
-import { cityData, RiskLevel } from "../../data/mockData";
 import StatusBadge from "../../components/ui/StatusBadge";
 import {
   AlertTriangle,
@@ -15,10 +15,44 @@ import {
   Gauge,
   ShieldCheck,
   ArrowRight,
+  RefreshCw,
+  Database,
+  AlertCircle,
 } from "lucide-react";
+import {
+  FloodStatusResponse,
+  getFloodStatus,
+  getLiveWeather,
+  LiveWeatherResponse,
+} from "../../data/api";
+
+type UiRisk =
+  | "CRITICAL"
+  | "HIGH"
+  | "MODERATE"
+  | "LOW"
+  | "SAFE";
+
+function normalizeRisk(value?: string | null): UiRisk {
+  switch ((value ?? "").toLowerCase()) {
+    case "critical":
+      return "CRITICAL";
+    case "high":
+      return "HIGH";
+    case "moderate":
+    case "medium":
+      return "MODERATE";
+    case "low":
+      return "LOW";
+    case "safe":
+      return "SAFE";
+    default:
+      return "LOW";
+  }
+}
 
 const riskBar: Record<
-  RiskLevel,
+  UiRisk,
   { width: string; color: string }
 > = {
   CRITICAL: {
@@ -43,13 +77,7 @@ const riskBar: Record<
   },
 };
 
-const confBar: Record<string, string> = {
-  High: "w-4/5 bg-green-500",
-  Medium: "w-3/5 bg-amber-500",
-  Low: "w-2/5 bg-red-400",
-};
-
-function getRiskBackground(level: RiskLevel) {
+function getRiskBackground(level: UiRisk) {
   switch (level) {
     case "CRITICAL":
       return "bg-red-50 border-red-200";
@@ -66,7 +94,7 @@ function getRiskBackground(level: RiskLevel) {
   }
 }
 
-function getRiskText(level: RiskLevel) {
+function getRiskText(level: UiRisk) {
   switch (level) {
     case "CRITICAL":
       return "Severe flood conditions expected";
@@ -80,6 +108,23 @@ function getRiskText(level: RiskLevel) {
       return "No significant flood impact expected";
     default:
       return "Forecast condition available";
+  }
+}
+
+function getRiskIconColor(level: UiRisk) {
+  switch (level) {
+    case "CRITICAL":
+      return "text-red-600";
+    case "HIGH":
+      return "text-orange-600";
+    case "MODERATE":
+      return "text-amber-600";
+    case "LOW":
+      return "text-lime-600";
+    case "SAFE":
+      return "text-green-600";
+    default:
+      return "text-warm-500";
   }
 }
 
@@ -118,49 +163,188 @@ function getTrend(
   };
 }
 
+function formatPeakTime(value?: string | null) {
+  if (!value) return "Not available";
+
+  const parsed = new Date(value.replace(" ", "T"));
+
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleString([], {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getModelExplanation(
+  floodStatus: FloodStatusResponse
+) {
+  const risk = normalizeRisk(floodStatus.overall_risk);
+  const rainfall = floodStatus.forecast_rainfall_mm;
+  const depth = floodStatus.peak_depth_m;
+
+  if (risk === "CRITICAL") {
+    return "The backend flood model indicates severe conditions. Immediate attention is required.";
+  }
+
+  if (risk === "HIGH") {
+    return "The model indicates a significant flood threat based on forecast rainfall and drainage-system response.";
+  }
+
+  if (risk === "MODERATE") {
+    return "The model indicates that localized flooding may occur if rainfall continues and drainage capacity becomes constrained.";
+  }
+
+  if (risk === "SAFE") {
+    return "Current model conditions do not indicate significant flood impact.";
+  }
+
+  if (
+    typeof rainfall === "number" &&
+    typeof depth === "number"
+  ) {
+    return `Current model output indicates limited flood impact, with approximately ${rainfall.toFixed(
+      1
+    )} mm forecast rainfall and a peak simulated depth of ${(
+      depth * 100
+    ).toFixed(1)} cm.`;
+  }
+
+  return "Current model conditions indicate limited flood impact.";
+}
+
 export default function RiskAnalysisScreen() {
   const { state, dispatch } = useApp();
 
-  const data = cityData[state.city];
-  const currentStep = data.timeSteps[state.timeStep];
-  const previousStep =
-    state.timeStep > 0
-      ? data.timeSteps[state.timeStep - 1]
-      : undefined;
+  const [floodStatus, setFloodStatus] =
+    useState<FloodStatusResponse | null>(null);
 
-  const overallRisk = data.alertLevel;
+  const [weather, setWeather] =
+    useState<LiveWeatherResponse | null>(null);
 
-  const rainfallTrend = getTrend(
-    currentStep.rainfall,
-    previousStep?.rainfall
-  );
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] =
+    useState<Date | null>(null);
 
-  const drainageTrend = getTrend(
-    currentStep.drainageUtil,
-    previousStep?.drainageUtil
-  );
+  const loadData = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
 
-  const depthTrend = getTrend(
-    currentStep.waterDepth,
-    previousStep?.waterDepth
-  );
+      const [flood, liveWeather] =
+        await Promise.all([
+          getFloodStatus({
+            includeAiSummary: false,
+          }),
+          getLiveWeather(),
+        ]);
 
-  const highestRiskFactor = [...data.riskFactors].sort(
-    (a, b) => {
-      const order: Record<RiskLevel, number> = {
-        CRITICAL: 5,
-        HIGH: 4,
-        MODERATE: 3,
-        LOW: 2,
-        SAFE: 1,
-      };
+      setFloodStatus(flood);
+      setWeather(liveWeather);
+      setLastUpdated(new Date());
+    } catch (err) {
+      console.error("Risk analysis API error:", err);
 
-      return (
-        order[b.severity] -
-        order[a.severity]
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load flood risk data."
       );
+    } finally {
+      setLoading(false);
     }
-  )[0];
+  }, []);
+
+  useEffect(() => {
+    loadData();
+
+    const interval = window.setInterval(
+      loadData,
+      5 * 60 * 1000
+    );
+
+    return () => window.clearInterval(interval);
+  }, [loadData]);
+
+  const overallRisk = normalizeRisk(
+    floodStatus?.overall_risk
+  );
+
+  const rainfall =
+    weather?.weather?.precipitation ??
+    null;
+
+  const rainfallForecast =
+    floodStatus?.forecast_rainfall_mm ??
+    null;
+
+  const peakDepthCm =
+    typeof floodStatus?.peak_depth_m === "number"
+      ? floodStatus.peak_depth_m * 100
+      : null;
+
+  const confidence =
+    typeof floodStatus?.confidence === "number"
+      ? Math.round(
+          floodStatus.confidence <= 1
+            ? floodStatus.confidence * 100
+            : floodStatus.confidence
+        )
+      : null;
+
+  const nodeCount =
+    floodStatus?.nodes?.length ?? 0;
+
+  const floodedNodes =
+    floodStatus?.flooded_nodes ?? [];
+
+  const criticalNodes =
+    floodStatus?.critical_nodes ?? [];
+
+  const highestRiskNode = useMemo(() => {
+    if (!floodStatus?.nodes?.length) {
+      return null;
+    }
+
+    return [...floodStatus.nodes].sort(
+      (a, b) =>
+        b.max_depth_m - a.max_depth_m
+    )[0];
+  }, [floodStatus]);
+
+  const currentForecastRainfall =
+    floodStatus?.forecast?.[0]?.rainfall_mm ??
+    weather?.forecast?.[0]?.rainfall_mm ??
+    null;
+
+  const nextForecastRainfall =
+    floodStatus?.forecast?.[1]?.rainfall_mm ??
+    weather?.forecast?.[1]?.rainfall_mm ??
+    undefined;
+
+  const rainfallTrend =
+    typeof currentForecastRainfall === "number"
+      ? getTrend(
+          currentForecastRainfall,
+          nextForecastRainfall
+        )
+      : {
+          label: "Unavailable",
+          icon: Minus,
+          color: "text-warm-400",
+        };
+
+  const modelExplanation =
+    floodStatus
+      ? getModelExplanation(floodStatus)
+      : "Loading current backend flood-model assessment.";
+
+  const cityLabel = state.city;
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6 md:py-8">
@@ -173,76 +357,145 @@ export default function RiskAnalysisScreen() {
         <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
           <div>
             <h1 className="text-xl md:text-2xl font-bold text-warm-900">
-              Risk Analysis — {data.name}
+              Risk Analysis — {cityLabel}
             </h1>
 
             <p className="text-sm text-warm-500 mt-1">
-              Why flooding is expected ·{" "}
-              {currentStep.label}
+              Why flooding is expected · backend model assessment
             </p>
           </div>
 
-          <div className="font-mono text-xs text-warm-400">
-            Forecast confidence:{" "}
-            <span className="font-bold text-warm-800">
-              {data.forecastConfidence}%
-            </span>
+          <div className="flex items-center gap-3">
+            {lastUpdated && !loading && (
+              <div className="font-mono text-[10px] text-warm-400">
+                Updated{" "}
+                {lastUpdated.toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </div>
+            )}
+
+            <button
+              onClick={loadData}
+              disabled={loading}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-warm-700 border border-warm-200 bg-white hover:bg-warm-50 disabled:opacity-50 transition-colors"
+            >
+              <RefreshCw
+                size={13}
+                className={
+                  loading
+                    ? "animate-spin"
+                    : ""
+                }
+              />
+              Refresh
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Overall risk */}
-      <div
-        className={`border px-4 py-4 mb-6 ${getRiskBackground(
-          overallRisk
-        )}`}
-      >
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      {/* Loading */}
+      {loading && !floodStatus && (
+        <div className="border border-warm-200 bg-white px-4 py-4 mb-6 flex items-center gap-3">
+          <RefreshCw
+            size={16}
+            className="animate-spin text-maroon-700"
+          />
+
+          <div>
+            <div className="text-sm font-medium text-warm-800">
+              Loading flood model
+            </div>
+
+            <div className="text-[11px] font-mono text-warm-400 mt-0.5">
+              Fetching current rainfall and drainage-model output
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error */}
+      {error && (
+        <div className="border border-red-200 bg-red-50 px-4 py-4 mb-6 flex items-start justify-between gap-4">
           <div className="flex items-start gap-3">
-            <AlertTriangle
-              size={20}
-              className={`shrink-0 mt-0.5 ${
-                overallRisk === "CRITICAL"
-                  ? "text-red-600"
-                  : overallRisk === "HIGH"
-                  ? "text-orange-600"
-                  : "text-amber-600"
-              }`}
+            <AlertCircle
+              size={17}
+              className="text-red-600 mt-0.5 shrink-0"
             />
 
             <div>
-              <div className="flex items-center gap-2 mb-1 flex-wrap">
-                <span className="text-sm font-bold text-warm-900">
-                  Overall Flood Risk
-                </span>
-
-                <StatusBadge
-                  level={overallRisk}
-                  size="md"
-                />
+              <div className="text-sm font-semibold text-red-900">
+                Risk data unavailable
               </div>
 
-              <div className="text-sm font-medium text-warm-800">
-                {getRiskText(overallRisk)}
+              <div className="text-xs text-red-700 mt-1">
+                {error}
               </div>
-
-              <p className="text-xs text-warm-600 mt-1">
-                {data.alertMessage}
-              </p>
             </div>
           </div>
 
-          <div className="text-left md:text-right shrink-0">
-            <div className="text-[9px] uppercase font-mono text-warm-500">
-              Current timestep
+          <button
+            onClick={loadData}
+            className="shrink-0 text-xs font-medium text-red-700 border border-red-200 bg-white px-3 py-2 hover:bg-red-50"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* Overall risk */}
+      {floodStatus && (
+        <div
+          className={`border px-4 py-4 mb-6 ${getRiskBackground(
+            overallRisk
+          )}`}
+        >
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle
+                size={20}
+                className={`shrink-0 mt-0.5 ${getRiskIconColor(
+                  overallRisk
+                )}`}
+              />
+
+              <div>
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                  <span className="text-sm font-bold text-warm-900">
+                    Overall Flood Risk
+                  </span>
+
+                  <StatusBadge
+                    level={overallRisk}
+                    size="md"
+                  />
+                </div>
+
+                <div className="text-sm font-medium text-warm-800">
+                  {getRiskText(overallRisk)}
+                </div>
+
+                <p className="text-xs text-warm-600 mt-1 max-w-2xl">
+                  {modelExplanation}
+                </p>
+              </div>
             </div>
 
-            <div className="text-lg font-bold font-mono text-warm-900">
-              {currentStep.label}
+            <div className="text-left md:text-right shrink-0">
+              <div className="text-[9px] uppercase font-mono text-warm-500">
+                Forecast horizon
+              </div>
+
+              <div className="text-lg font-bold font-mono text-warm-900">
+                {floodStatus.forecast_hours ??
+                  "—"}{" "}
+                hr
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Current risk drivers */}
       <div className="mb-8">
@@ -252,137 +505,315 @@ export default function RiskAnalysisScreen() {
           </div>
 
           <div className="text-[11px] font-mono text-warm-400">
-            Current conditions compared with the previous forecast step
+            Live weather and flood-model indicators
           </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {[
-            {
-              icon: CloudRain,
-              label: "Rainfall",
-              value: `${currentStep.rainfall} mm/hr`,
-              trend: rainfallTrend,
-            },
-            {
-              icon: Activity,
-              label: "Drainage stress",
-              value: `${currentStep.drainageUtil}%`,
-              trend: drainageTrend,
-            },
-            {
-              icon: Waves,
-              label: "Water depth",
-              value: `${currentStep.waterDepth} cm`,
-              trend: depthTrend,
-            },
-          ].map(
-            ({
-              icon: Icon,
-              label,
-              value,
-              trend,
-            }) => {
-              const TrendIcon = trend.icon;
+          {/* Rainfall */}
+          <div className="bg-white border border-warm-200 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <CloudRain
+                  size={15}
+                  className="text-warm-400"
+                />
 
-              return (
-                <div
-                  key={label}
-                  className="bg-white border border-warm-200 p-4"
-                >
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <Icon
-                        size={15}
-                        className="text-warm-400"
-                      />
+                <span className="text-[10px] font-mono uppercase tracking-wide text-warm-500">
+                  Rainfall
+                </span>
+              </div>
 
-                      <span className="text-[10px] font-mono uppercase tracking-wide text-warm-500">
-                        {label}
-                      </span>
-                    </div>
+              {(() => {
+                const TrendIcon =
+                  rainfallTrend.icon;
 
-                    <TrendIcon
-                      size={14}
-                      className={trend.color}
-                    />
-                  </div>
+                return (
+                  <TrendIcon
+                    size={14}
+                    className={
+                      rainfallTrend.color
+                    }
+                  />
+                );
+              })()}
+            </div>
 
-                  <div className="text-xl font-bold font-mono text-warm-900">
-                    {value}
-                  </div>
+            <div className="text-xl font-bold font-mono text-warm-900">
+              {typeof rainfall === "number"
+                ? `${rainfall.toFixed(1)} mm`
+                : "—"}
+            </div>
 
-                  <div
-                    className={`text-[10px] font-mono mt-1 ${trend.color}`}
-                  >
-                    {trend.label}
-                  </div>
-                </div>
-              );
-            }
-          )}
+            <div className="text-[10px] font-mono mt-1 text-warm-400">
+              {rainfall !== null
+                ? "Current precipitation"
+                : "Unavailable"}
+            </div>
+          </div>
+
+          {/* Forecast rainfall */}
+          <div className="bg-white border border-warm-200 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Activity
+                  size={15}
+                  className="text-warm-400"
+                />
+
+                <span className="text-[10px] font-mono uppercase tracking-wide text-warm-500">
+                  Forecast rainfall
+                </span>
+              </div>
+
+              <Database
+                size={13}
+                className="text-warm-300"
+              />
+            </div>
+
+            <div className="text-xl font-bold font-mono text-warm-900">
+              {rainfallForecast !== null
+                ? `${rainfallForecast.toFixed(1)} mm`
+                : "—"}
+            </div>
+
+            <div className="text-[10px] font-mono mt-1 text-warm-400">
+              Backend flood-model input
+            </div>
+          </div>
+
+          {/* Water depth */}
+          <div className="bg-white border border-warm-200 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Waves
+                  size={15}
+                  className="text-warm-400"
+                />
+
+                <span className="text-[10px] font-mono uppercase tracking-wide text-warm-500">
+                  Peak water depth
+                </span>
+              </div>
+
+              <Minus
+                size={14}
+                className="text-warm-400"
+              />
+            </div>
+
+            <div className="text-xl font-bold font-mono text-warm-900">
+              {peakDepthCm !== null
+                ? `${peakDepthCm.toFixed(1)} cm`
+                : "—"}
+            </div>
+
+            <div className="text-[10px] font-mono mt-1 text-warm-400">
+              Simulated model peak
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Risk factors */}
-      <div className="bg-white border border-warm-200 mb-6">
-        <div className="px-4 py-3 border-b border-warm-100">
-          <div className="text-sm font-semibold text-warm-900">
-            Contributing Risk Factors
+      {/* Model output */}
+      {floodStatus && (
+        <div className="bg-white border border-warm-200 mb-6">
+          <div className="px-4 py-3 border-b border-warm-100">
+            <div className="flex items-center gap-2">
+              <Database
+                size={15}
+                className="text-warm-400"
+              />
+
+              <div>
+                <div className="text-sm font-semibold text-warm-900">
+                  Backend Flood Model Output
+                </div>
+
+                <div className="text-[11px] text-warm-400 font-mono mt-0.5">
+                  Current drainage-network simulation
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div className="text-[11px] text-warm-400 font-mono mt-0.5">
-            Environmental and infrastructure conditions influencing the forecast
+          <div className="grid grid-cols-2 md:grid-cols-4 divide-x divide-warm-100">
+            <div className="p-4">
+              <div className="text-[9px] uppercase font-mono text-warm-400">
+                Confidence
+              </div>
+
+              <div className="text-lg font-bold font-mono text-warm-900 mt-1">
+                {confidence !== null
+                  ? `${confidence}%`
+                  : "—"}
+              </div>
+            </div>
+
+            <div className="p-4">
+              <div className="text-[9px] uppercase font-mono text-warm-400">
+                Model nodes
+              </div>
+
+              <div className="text-lg font-bold font-mono text-warm-900 mt-1">
+                {nodeCount}
+              </div>
+            </div>
+
+            <div className="p-4">
+              <div className="text-[9px] uppercase font-mono text-warm-400">
+                Flooded nodes
+              </div>
+
+              <div className="text-lg font-bold font-mono text-warm-900 mt-1">
+                {floodedNodes.length}
+              </div>
+            </div>
+
+            <div className="p-4">
+              <div className="text-[9px] uppercase font-mono text-warm-400">
+                Peak time
+              </div>
+
+              <div className="text-sm font-bold font-mono text-warm-900 mt-1">
+                {formatPeakTime(
+                  floodStatus.time_to_peak
+                )}
+              </div>
+            </div>
           </div>
-        </div>
 
-        <div className="divide-y divide-warm-50">
-          {data.riskFactors.map((rf) => {
-            const bar = riskBar[rf.severity];
-
-            return (
-              <div
-                key={rf.id}
-                className="px-4 py-4"
-              >
-                <div className="flex items-start justify-between gap-4 mb-2">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <span className="text-sm font-medium text-warm-900">
-                        {rf.label}
-                      </span>
-
-                      <StatusBadge
-                        level={rf.severity}
-                      />
-                    </div>
-
-                    <div className="font-mono text-base font-bold text-warm-800">
-                      {rf.value}
-                    </div>
+          {/* Critical nodes */}
+          {(criticalNodes.length > 0 ||
+            floodedNodes.length > 0) && (
+            <div className="border-t border-warm-100 px-4 py-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <div className="text-[9px] uppercase font-mono text-warm-400 mb-2">
+                    Critical nodes
                   </div>
 
-                  {highestRiskFactor?.id === rf.id && (
-                    <span className="text-[9px] font-mono uppercase text-red-600 border border-red-200 bg-red-50 px-2 py-1">
-                      Major driver
+                  {criticalNodes.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {criticalNodes.map(
+                        (node) => (
+                          <span
+                            key={node}
+                            className="text-[10px] font-mono px-2 py-1 border border-amber-200 bg-amber-50 text-amber-800"
+                          >
+                            Node {node}
+                          </span>
+                        )
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-warm-400">
+                      None reported
                     </span>
                   )}
                 </div>
 
-                <div className="h-1.5 bg-warm-100 mb-2 overflow-hidden">
-                  <div
-                    className={`h-full transition-all ${bar.width} ${bar.color}`}
-                  />
-                </div>
+                <div>
+                  <div className="text-[9px] uppercase font-mono text-warm-400 mb-2">
+                    Flooded nodes
+                  </div>
 
-                <p className="text-xs text-warm-500 leading-relaxed">
-                  {rf.explanation}
-                </p>
+                  {floodedNodes.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {floodedNodes.map(
+                        (node) => (
+                          <span
+                            key={node}
+                            className="text-[10px] font-mono px-2 py-1 border border-red-200 bg-red-50 text-red-700"
+                          >
+                            Node {node}
+                          </span>
+                        )
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-warm-400">
+                      No flooded nodes reported
+                    </span>
+                  )}
+                </div>
               </div>
-            );
-          })}
+            </div>
+          )}
         </div>
-      </div>
+      )}
+
+      {/* Highest simulated node */}
+      {highestRiskNode && (
+        <div className="bg-white border border-warm-200 mb-6">
+          <div className="px-4 py-3 border-b border-warm-100">
+            <div className="text-sm font-semibold text-warm-900">
+              Highest Simulated Node Depth
+            </div>
+
+            <div className="text-[11px] text-warm-400 font-mono mt-0.5">
+              Direct output from the drainage model
+            </div>
+          </div>
+
+          <div className="px-4 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <div className="text-[9px] uppercase font-mono text-warm-400">
+                Node
+              </div>
+
+              <div className="text-lg font-bold font-mono text-warm-900">
+                {highestRiskNode.node}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[9px] uppercase font-mono text-warm-400">
+                Maximum depth
+              </div>
+
+              <div className="text-lg font-bold font-mono text-warm-900">
+                {(
+                  highestRiskNode.max_depth_m *
+                  100
+                ).toFixed(1)}{" "}
+                cm
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[9px] uppercase font-mono text-warm-400">
+                Model risk
+              </div>
+
+              <StatusBadge
+                level={normalizeRisk(
+                  highestRiskNode.risk
+                )}
+              />
+            </div>
+
+            <div>
+              <div className="text-[9px] uppercase font-mono text-warm-400">
+                Flooding
+              </div>
+
+              <div
+                className={`text-xs font-semibold ${
+                  highestRiskNode.flooding
+                    ? "text-red-600"
+                    : "text-green-600"
+                }`}
+              >
+                {highestRiskNode.flooding
+                  ? "Detected"
+                  : "Not detected"}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Causal mechanism */}
       <div className="bg-white border border-warm-200 mb-6">
@@ -392,7 +823,7 @@ export default function RiskAnalysisScreen() {
           </div>
 
           <div className="text-[11px] text-warm-400 font-mono">
-            Rainfall → runoff → drainage stress → surface accumulation
+            Rainfall → runoff → drainage response → surface accumulation
           </div>
         </div>
 
@@ -403,33 +834,46 @@ export default function RiskAnalysisScreen() {
                 icon: CloudRain,
                 number: "01",
                 label: "Rainfall",
-                value: `${currentStep.rainfall} mm/hr`,
+                value:
+                  rainfallForecast !== null
+                    ? `${rainfallForecast.toFixed(
+                        1
+                      )} mm`
+                    : "—",
                 description:
-                  "Incoming precipitation increases surface runoff.",
+                  "Forecast precipitation enters the flood model.",
               },
               {
                 icon: Mountain,
                 number: "02",
                 label: "Terrain",
-                value: "Low-lying areas",
+                value: "Surface routing",
                 description:
-                  "Local topography concentrates runoff.",
+                  "Terrain determines how runoff can accumulate and move.",
               },
               {
                 icon: Activity,
                 number: "03",
                 label: "Drainage",
-                value: `${currentStep.drainageUtil}%`,
+                value:
+                  nodeCount > 0
+                    ? `${nodeCount} nodes`
+                    : "—",
                 description:
-                  "Network capacity becomes increasingly constrained.",
+                  "The drainage network is simulated as connected model nodes.",
               },
               {
                 icon: ArrowDown,
                 number: "04",
                 label: "Accumulation",
-                value: `${currentStep.waterDepth} cm`,
+                value:
+                  peakDepthCm !== null
+                    ? `${peakDepthCm.toFixed(
+                        1
+                      )} cm`
+                    : "—",
                 description:
-                  "Excess runoff begins accumulating on the surface.",
+                  "Modelled water depth indicates potential surface accumulation.",
               },
               {
                 icon: Waves,
@@ -437,7 +881,7 @@ export default function RiskAnalysisScreen() {
                 label: "Inundation",
                 value: overallRisk,
                 description:
-                  "Combined conditions produce the flood-risk level.",
+                  "The combined model output produces the current flood-risk level.",
               },
             ].map((item, i, arr) => {
               const Icon = item.icon;
@@ -496,12 +940,24 @@ export default function RiskAnalysisScreen() {
 
           <div className="px-4 py-4">
             <p className="text-sm text-warm-700 leading-relaxed">
-              {data.whyAtRisk}
+              {modelExplanation}
             </p>
+
+            {floodStatus?.reason && (
+              <div className="mt-3 px-3 py-3 bg-warm-50 border border-warm-100">
+                <div className="text-[9px] uppercase font-mono text-warm-400 mb-1">
+                  Model note
+                </div>
+
+                <p className="text-xs text-warm-600">
+                  {floodStatus.reason}
+                </p>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Immediate impact */}
+        {/* Expected impact */}
         <div className="bg-white border border-warm-200">
           <div className="px-4 py-3 border-b border-warm-100">
             <div className="text-sm font-semibold text-warm-900">
@@ -510,34 +966,50 @@ export default function RiskAnalysisScreen() {
           </div>
 
           <div className="px-4 py-4 space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <span className="text-xs text-warm-500">
-                Predicted water depth
+                Predicted peak depth
               </span>
 
-              <span className="font-mono text-sm font-bold text-red-700">
-                {currentStep.waterDepth} cm
+              <span className="font-mono text-sm font-bold text-warm-800">
+                {peakDepthCm !== null
+                  ? `${peakDepthCm.toFixed(
+                      1
+                    )} cm`
+                  : "—"}
               </span>
             </div>
 
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <span className="text-xs text-warm-500">
-                Drainage utilization
+                Flooded drainage nodes
               </span>
 
-              <span className="font-mono text-sm font-bold text-amber-700">
-                {currentStep.drainageUtil}%
+              <span className="font-mono text-sm font-bold text-warm-800">
+                {floodedNodes.length}
               </span>
             </div>
 
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <span className="text-xs text-warm-500">
                 Flood-risk level
               </span>
 
               <StatusBadge
-                level={currentStep.riskLevel}
+                level={overallRisk}
               />
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs text-warm-500">
+                Model peak
+              </span>
+
+              <span className="font-mono text-xs font-bold text-warm-800">
+                {formatPeakTime(
+                  floodStatus?.time_to_peak
+                )}
+              </span>
             </div>
           </div>
         </div>
@@ -558,82 +1030,115 @@ export default function RiskAnalysisScreen() {
               </div>
 
               <div className="text-[10px] font-mono text-warm-400">
-                Confidence supporting this risk assessment
+                Confidence returned by the backend flood model
               </div>
             </div>
           </div>
 
           <div className="font-mono text-xl font-bold text-warm-800">
-            {data.forecastConfidence}%
+            {confidence !== null
+              ? `${confidence}%`
+              : "—"}
           </div>
         </div>
 
         <div className="p-4">
-          <div className="h-2 bg-warm-100 overflow-hidden mb-4">
-            <div
-              className="h-full bg-maroon-700"
-              style={{
-                width: `${data.forecastConfidence}%`,
-              }}
-            />
-          </div>
+          {confidence !== null && (
+            <div className="h-2 bg-warm-100 overflow-hidden mb-4">
+              <div
+                className="h-full bg-maroon-700 transition-all"
+                style={{
+                  width: `${Math.min(
+                    Math.max(confidence, 0),
+                    100
+                  )}%`,
+                }}
+              />
+            </div>
+          )}
 
           <div className="divide-y divide-warm-50">
-            {data.confidenceFactors.map(
-              (cf) => (
-                <div
-                  key={cf.label}
-                  className="py-3 flex items-center justify-between gap-4"
-                >
-                  <div className="flex items-center gap-2">
-                    <CheckCircle
-                      size={13}
-                      className={
-                        cf.level === "High"
-                          ? "text-green-500"
-                          : cf.level === "Medium"
-                          ? "text-amber-500"
-                          : "text-red-400"
-                      }
-                    />
+            <div className="py-3 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <CheckCircle
+                  size={13}
+                  className="text-green-500"
+                />
 
-                    <span className="text-xs text-warm-700">
-                      {cf.label}
-                    </span>
-                  </div>
+                <span className="text-xs text-warm-700">
+                  Live rainfall input
+                </span>
+              </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <div className="w-20 h-1.5 bg-warm-100 overflow-hidden">
-                      <div
-                        className={`h-full ${confBar[cf.level]}`}
-                      />
-                    </div>
+              <span className="text-[11px] font-mono text-green-700">
+                Connected
+              </span>
+            </div>
 
-                    <span
-                      className={`text-[11px] font-mono ${
-                        cf.level === "High"
-                          ? "text-green-700"
-                          : cf.level === "Medium"
-                          ? "text-amber-700"
-                          : "text-red-600"
-                      }`}
-                    >
-                      {cf.level}
-                    </span>
-                  </div>
-                </div>
-              )
-            )}
+            <div className="py-3 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <CheckCircle
+                  size={13}
+                  className="text-green-500"
+                />
+
+                <span className="text-xs text-warm-700">
+                  Drainage simulation
+                </span>
+              </div>
+
+              <span className="text-[11px] font-mono text-green-700">
+                {nodeCount > 0
+                  ? "Available"
+                  : "Unavailable"}
+              </span>
+            </div>
+
+            <div className="py-3 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <CheckCircle
+                  size={13}
+                  className="text-green-500"
+                />
+
+                <span className="text-xs text-warm-700">
+                  Model confidence
+                </span>
+              </div>
+
+              <span className="text-[11px] font-mono text-warm-700">
+                {confidence !== null
+                  ? `${confidence}% returned`
+                  : "Unavailable"}
+              </span>
+            </div>
           </div>
 
           <div className="mt-3 px-3 py-3 bg-warm-50 border border-warm-100">
             <p className="text-[11px] text-warm-500 leading-relaxed">
-              Confidence reflects agreement between radar
-              observation, terrain model accuracy, freshness
-              of drainage telemetry, and corroborating citizen
-              reports.
+              This confidence value is the backend model output.
+              It should not be interpreted as a formal probability
+              of flooding.
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* Prototype / data note */}
+      <div className="border border-warm-200 bg-warm-50 px-4 py-3 mb-6">
+        <div className="flex items-start gap-2">
+          <AlertCircle
+            size={14}
+            className="text-warm-500 mt-0.5 shrink-0"
+          />
+
+          <p className="text-[11px] text-warm-500 leading-relaxed">
+            Risk values, rainfall inputs, simulated depths and
+            drainage-node outputs shown above come from the current
+            backend prototype. The drainage network is a demonstration
+            model and should not be treated as surveyed municipal
+            infrastructure.
+          </p>
         </div>
       </div>
 

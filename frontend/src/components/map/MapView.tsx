@@ -1,8 +1,19 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+
 import { useApp } from "../../state/AppContext";
 import { cityData, RiskLevel } from "../../data/mockData";
+import {
+  getDrainageAssets,
+  getFloodStatus,
+  type DrainageAsset,
+  type FloodStatusResponse,
+} from "../../data/api";
+
+/* =========================================================
+   DELHI NCR BOUNDARY
+========================================================= */
 
 const ncrBoundary: [number, number][] = [
   [28.88, 76.84],
@@ -21,11 +32,9 @@ const ncrBoundary: [number, number][] = [
   [28.88, 76.84],
 ];
 
-/*
- * IMPORTANT:
- * City names are lowercase because AppContext / GlobalHeader
- * uses: "delhi", "mumbai", "chennai"
- */
+/* =========================================================
+   CITY LOCATIONS
+========================================================= */
 
 const CITY_LOCATIONS: Record<
   string,
@@ -35,12 +44,12 @@ const CITY_LOCATIONS: Record<
   }
 > = {
   delhi: {
-    center: [28.6139, 77.2090],
+    center: [28.6139, 77.209],
     zoom: 10,
   },
 
   mumbai: {
-    center: [19.0760, 72.8777],
+    center: [19.076, 72.8777],
     zoom: 10,
   },
 
@@ -50,33 +59,33 @@ const CITY_LOCATIONS: Record<
   },
 };
 
-/*
- * Rainfall overlay bounds for each city.
- */
+/* =========================================================
+   CITY BOUNDS
+========================================================= */
 
 const CITY_BOUNDS: Record<
   string,
   [[number, number], [number, number]]
 > = {
   delhi: [
-    [28.20, 76.70],
-    [29.00, 77.65],
+    [28.2, 76.7],
+    [29.0, 77.65],
   ],
 
   mumbai: [
-    [18.70, 72.60],
-    [19.40, 73.20],
+    [18.7, 72.6],
+    [19.4, 73.2],
   ],
 
   chennai: [
-    [12.75, 79.90],
+    [12.75, 79.9],
     [13.45, 80.55],
   ],
 };
 
-/*
- * Flood risk colours.
- */
+/* =========================================================
+   MOCK RISK COLORS
+========================================================= */
 
 const riskColors: Record<RiskLevel, string> = {
   CRITICAL: "#991B1B",
@@ -86,13 +95,9 @@ const riskColors: Record<RiskLevel, string> = {
   SAFE: "#16A34A",
 };
 
-/*
- * Convert the existing prototype x/y coordinates
- * into geographic Leaflet coordinates.
- *
- * The current mock data uses a 1000 x 750 coordinate space.
- * This keeps mockData.ts unchanged.
- */
+/* =========================================================
+   PROTOTYPE COORDINATE CONVERSION
+========================================================= */
 
 function prototypeToLatLng(
   x: number,
@@ -125,6 +130,78 @@ function prototypeToLatLng(
   return [latitude, longitude];
 }
 
+/* =========================================================
+   BACKEND RISK HELPERS
+========================================================= */
+
+function backendRiskColor(
+  risk?: string
+): string {
+  switch (risk?.toLowerCase()) {
+    case "severe":
+    case "critical":
+      return "#991B1B";
+
+    case "high":
+      return "#DC2626";
+
+    case "moderate":
+      return "#F59E0B";
+
+    case "low":
+      return "#16A34A";
+
+    default:
+      return "#6B7280";
+  }
+}
+
+function backendNodeStatus(
+  risk: string | undefined,
+  flooding: boolean
+): string {
+  if (flooding) {
+    return "Flooding";
+  }
+
+  switch (risk?.toLowerCase()) {
+    case "severe":
+      return "Severe";
+
+    case "high":
+      return "High";
+
+    case "moderate":
+      return "Moderate";
+
+    case "low":
+      return "Low";
+
+    default:
+      return "Normal";
+  }
+}
+
+/* =========================================================
+   BACKEND COORDINATE HELPERS
+========================================================= */
+
+function getValidCoordinate(
+  value: unknown
+): number | null {
+  const numericValue = Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    return null;
+  }
+
+  return numericValue;
+}
+
+/* =========================================================
+   MAP COMPONENT
+========================================================= */
+
 export default function MapView() {
   const mapContainer =
     useRef<HTMLDivElement>(null);
@@ -138,10 +215,6 @@ export default function MapView() {
   const boundaryRef =
     useRef<L.Polygon | null>(null);
 
-  /*
-   * Dynamic map layer references.
-   */
-
   const floodZonesRef =
     useRef<L.Polygon[]>([]);
 
@@ -154,24 +227,136 @@ export default function MapView() {
   const drainageLinesRef =
     useRef<L.Polyline[]>([]);
 
+  const backendDrainageMarkersRef =
+    useRef<L.CircleMarker[]>([]);
+
+  const backendFloodMarkersRef =
+    useRef<L.CircleMarker[]>([]);
+
   const { state, dispatch } = useApp();
 
   const city = String(state.city);
 
-  /*
-   * ==================================================
-   * CREATE MAP
-   * ==================================================
-   */
+  const [drainageAssets, setDrainageAssets] =
+    useState<DrainageAsset[]>([]);
+
+  const [floodStatus, setFloodStatus] =
+    useState<FloodStatusResponse | null>(null);
+
+  const [backendLoading, setBackendLoading] =
+    useState(false);
+
+  const [backendError, setBackendError] =
+    useState<string | null>(null);
+
+  /* =======================================================
+     FETCH BACKEND FLOOD DATA
+  ======================================================= */
 
   useEffect(() => {
-    if (!mapContainer.current) return;
+    let cancelled = false;
+
+    async function loadBackendData() {
+      /*
+       * The current backend is configured around the
+       * Delhi drainage/SWMM model.
+       *
+       * Mumbai and Chennai remain prototype-only until
+       * their corresponding drainage models are connected.
+       */
+
+      if (city !== "delhi") {
+        setDrainageAssets([]);
+        setFloodStatus(null);
+        setBackendError(null);
+        setBackendLoading(false);
+
+        return;
+      }
+
+      setBackendLoading(true);
+      setBackendError(null);
+
+      try {
+        const [
+          drainageResponse,
+          floodResponse,
+        ] = await Promise.all([
+          getDrainageAssets(),
+          getFloodStatus(),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        setDrainageAssets(
+          Array.isArray(drainageResponse)
+            ? drainageResponse
+            : []
+        );
+
+        setFloodStatus(
+          floodResponse || null
+        );
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        console.error(
+          "INUNDRA backend map integration error:",
+          error
+        );
+
+        setBackendError(
+          error instanceof Error
+            ? error.message
+            : "Unable to load live flood model data."
+        );
+
+        setDrainageAssets([]);
+        setFloodStatus(null);
+      } finally {
+        if (!cancelled) {
+          setBackendLoading(false);
+        }
+      }
+    }
+
+    loadBackendData();
 
     /*
-     * Don't create the Leaflet map more than once.
+     * Refresh every five minutes.
+     *
+     * The current flood endpoint performs a hydraulic
+     * simulation, so a conservative refresh interval
+     * is appropriate for the prototype.
      */
 
-    if (mapRef.current) return;
+    const interval = window.setInterval(
+      loadBackendData,
+      5 * 60 * 1000
+    );
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [city]);
+
+  /* =======================================================
+     CREATE MAP
+  ======================================================= */
+
+  useEffect(() => {
+    if (!mapContainer.current) {
+      return;
+    }
+
+    if (mapRef.current) {
+      return;
+    }
 
     const initialLocation =
       CITY_LOCATIONS[city] ||
@@ -183,15 +368,12 @@ export default function MapView() {
       initialLocation.center,
       initialLocation.zoom
     );
-    
 
     mapRef.current = map;
 
-    /*
-     * ==================================================
-     * OPEN STREET MAP
-     * ==================================================
-     */
+    /* =====================================================
+       OPENSTREETMAP
+    ===================================================== */
 
     L.tileLayer(
       "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -202,28 +384,34 @@ export default function MapView() {
       }
     ).addTo(map);
 
-    /*
-     * ==================================================
-     * RAINFALL LEGEND
-     * ==================================================
-     */
+    /* =====================================================
+       RAINFALL LEGEND
+    ===================================================== */
 
     const legend = L.DomUtil.create(
       "div",
       "rainfall-legend"
     );
 
-    legend.style.position = "absolute";
+    legend.style.position =
+      "absolute";
+
     legend.style.right = "15px";
     legend.style.bottom = "15px";
     legend.style.zIndex = "1000";
+
     legend.style.background =
       "rgba(255,255,255,0.92)";
+
     legend.style.padding =
       "10px 12px";
-    legend.style.borderRadius = "8px";
+
+    legend.style.borderRadius =
+      "8px";
+
     legend.style.boxShadow =
       "0 2px 8px rgba(0,0,0,0.18)";
+
     legend.style.fontSize = "12px";
     legend.style.lineHeight = "1.5";
     legend.style.minWidth = "180px";
@@ -263,25 +451,11 @@ export default function MapView() {
         <span>Heavy</span>
         <span>Extreme</span>
       </div>
-
-      <div style="
-        margin-top:8px;
-        color:#6B7280;
-        font-size:10px;
-      ">
-        Demo rainfall visualization
-      </div>
     `;
 
     map
       .getContainer()
       .appendChild(legend);
-
-    /*
-     * ==================================================
-     * CLEANUP
-     * ==================================================
-     */
 
     return () => {
       map.remove();
@@ -289,25 +463,20 @@ export default function MapView() {
     };
   }, []);
 
-  /*
-   * ==================================================
-   * CHANGE CITY
-   * ==================================================
-   */
+  /* =======================================================
+     CHANGE CITY
+  ======================================================= */
 
   useEffect(() => {
     const map = mapRef.current;
 
-    if (!map) return;
+    if (!map) {
+      return;
+    }
 
     const location =
       CITY_LOCATIONS[city] ||
       CITY_LOCATIONS.delhi;
-
-    console.log(
-      "Changing map city to:",
-      city
-    );
 
     map.flyTo(
       location.center,
@@ -319,25 +488,26 @@ export default function MapView() {
       }
     );
 
-    setTimeout(() => {
-      map.invalidateSize();
-    }, 300);
+    const resizeTimer =
+      window.setTimeout(() => {
+        map.invalidateSize();
+      }, 300);
+
+    return () => {
+      window.clearTimeout(resizeTimer);
+    };
   }, [city]);
 
-  /*
-   * ==================================================
-   * RAINFALL OVERLAY
-   * ==================================================
-   */
+  /* =======================================================
+     RAINFALL OVERLAY
+  ======================================================= */
 
   useEffect(() => {
     const map = mapRef.current;
 
-    if (!map) return;
-
-    /*
-     * Remove old rainfall overlay.
-     */
+    if (!map) {
+      return;
+    }
 
     if (rainfallOverlayRef.current) {
       map.removeLayer(
@@ -346,10 +516,6 @@ export default function MapView() {
 
       rainfallOverlayRef.current = null;
     }
-
-    /*
-     * Remove old NCR boundary.
-     */
 
     if (boundaryRef.current) {
       map.removeLayer(
@@ -360,13 +526,11 @@ export default function MapView() {
     }
 
     /*
-     * ==================================================
-     * SYNTHETIC RAINFALL VISUALIZATION
-     * ==================================================
+     * This remains a synthetic rainfall visualization.
      *
-     * Demo/synthetic rainfall data for now.
-     * Later this can be replaced with backend
-     * rainfall prediction data.
+     * The current backend does not provide a radar/raster
+     * rainfall image. A real radar or raster product can
+     * replace this overlay later.
      */
 
     const rainfallSvg = `
@@ -376,143 +540,28 @@ export default function MapView() {
         height="750"
         viewBox="0 0 1000 750"
       >
-
         <defs>
-
-          <linearGradient
-            id="baseRain"
-            x1="0"
-            y1="0"
-            x2="1"
-            y2="1"
-          >
-
-            <stop
-              offset="0%"
-              stop-color="#D1FAE5"
-              stop-opacity="0.12"
-            />
-
-            <stop
-              offset="50%"
-              stop-color="#ECFCCB"
-              stop-opacity="0.08"
-            />
-
-            <stop
-              offset="100%"
-              stop-color="#D1FAE5"
-              stop-opacity="0.12"
-            />
-
-          </linearGradient>
-
           <radialGradient
             id="rainMain"
             cx="50%"
             cy="50%"
             r="50%"
           >
-
             <stop
               offset="0%"
               stop-color="#F97316"
-              stop-opacity="0.82"
-            />
-
-            <stop
-              offset="22%"
-              stop-color="#FACC15"
-              stop-opacity="0.78"
-            />
-
-            <stop
-              offset="48%"
-              stop-color="#A3E635"
-              stop-opacity="0.58"
-            />
-
-            <stop
-              offset="75%"
-              stop-color="#84CC16"
-              stop-opacity="0.30"
-            />
-
-            <stop
-              offset="100%"
-              stop-color="#84CC16"
-              stop-opacity="0"
-            />
-
-          </radialGradient>
-
-          <radialGradient
-            id="rainHeavy"
-            cx="50%"
-            cy="50%"
-            r="50%"
-          >
-
-            <stop
-              offset="0%"
-              stop-color="#DC2626"
-              stop-opacity="0.92"
-            />
-
-            <stop
-              offset="18%"
-              stop-color="#EF4444"
-              stop-opacity="0.86"
-            />
-
-            <stop
-              offset="38%"
-              stop-color="#F97316"
-              stop-opacity="0.82"
-            />
-
-            <stop
-              offset="58%"
-              stop-color="#FACC15"
-              stop-opacity="0.68"
-            />
-
-            <stop
-              offset="78%"
-              stop-color="#A3E635"
-              stop-opacity="0.35"
-            />
-
-            <stop
-              offset="100%"
-              stop-color="#84CC16"
-              stop-opacity="0"
-            />
-
-          </radialGradient>
-
-          <radialGradient
-            id="rainYellow"
-            cx="50%"
-            cy="50%"
-            r="50%"
-          >
-
-            <stop
-              offset="0%"
-              stop-color="#FDE047"
               stop-opacity="0.72"
             />
 
             <stop
-              offset="45%"
+              offset="35%"
               stop-color="#FACC15"
-              stop-opacity="0.48"
+              stop-opacity="0.52"
             />
 
             <stop
-              offset="75%"
-              stop-color="#A3E635"
+              offset="70%"
+              stop-color="#84CC16"
               stop-opacity="0.24"
             />
 
@@ -521,55 +570,39 @@ export default function MapView() {
               stop-color="#84CC16"
               stop-opacity="0"
             />
-
           </radialGradient>
 
           <radialGradient
-            id="rainHotspot"
+            id="rainHeavy"
             cx="50%"
             cy="50%"
             r="50%"
           >
-
             <stop
               offset="0%"
-              stop-color="#991B1B"
-              stop-opacity="0.95"
-            />
-
-            <stop
-              offset="22%"
               stop-color="#DC2626"
-              stop-opacity="0.90"
+              stop-opacity="0.82"
             />
 
             <stop
-              offset="45%"
+              offset="25%"
               stop-color="#F97316"
-              stop-opacity="0.72"
+              stop-opacity="0.70"
             />
 
             <stop
-              offset="70%"
+              offset="55%"
               stop-color="#FACC15"
-              stop-opacity="0.40"
+              stop-opacity="0.45"
             />
 
             <stop
               offset="100%"
-              stop-color="#FACC15"
+              stop-color="#84CC16"
               stop-opacity="0"
             />
-
           </radialGradient>
-
         </defs>
-
-        <rect
-          width="1000"
-          height="750"
-          fill="url(#baseRain)"
-        />
 
         <ellipse
           cx="455"
@@ -602,47 +635,6 @@ export default function MapView() {
           ry="175"
           fill="url(#rainMain)"
         />
-
-        <ellipse
-          cx="430"
-          cy="165"
-          rx="280"
-          ry="155"
-          fill="url(#rainYellow)"
-        />
-
-        <ellipse
-          cx="850"
-          cy="470"
-          rx="170"
-          ry="190"
-          fill="url(#rainYellow)"
-        />
-
-        <ellipse
-          cx="130"
-          cy="350"
-          rx="190"
-          ry="220"
-          fill="url(#rainYellow)"
-        />
-
-        <ellipse
-          cx="760"
-          cy="315"
-          rx="78"
-          ry="68"
-          fill="url(#rainHotspot)"
-        />
-
-        <ellipse
-          cx="535"
-          cy="425"
-          rx="68"
-          ry="60"
-          fill="url(#rainHotspot)"
-        />
-
       </svg>
     `;
 
@@ -659,7 +651,7 @@ export default function MapView() {
         svgUrl,
         rainfallBounds,
         {
-          opacity: 0.50,
+          opacity: 0.38,
           interactive: false,
         }
       );
@@ -669,11 +661,9 @@ export default function MapView() {
     rainfallOverlayRef.current =
       rainfallOverlay;
 
-    /*
-     * ==================================================
-     * NCR BOUNDARY
-     * ==================================================
-     */
+    /* =====================================================
+       DELHI NCR BOUNDARY
+    ===================================================== */
 
     if (city === "delhi") {
       const boundary = L.polygon(
@@ -694,24 +684,26 @@ export default function MapView() {
     }
   }, [city]);
 
-  /*
-   * ==================================================
-   * FLOOD + DRAINAGE DATA LAYERS
-   * ==================================================
-   */
+  /* =======================================================
+     FLOOD + DRAINAGE LAYERS
+  ======================================================= */
 
   useEffect(() => {
     const map = mapRef.current;
 
-    if (!map) return;
+    if (!map) {
+      return;
+    }
 
     const data = cityData[city];
 
-    /*
-     * ==================================================
-     * CLEAR PREVIOUS DATA LAYERS
-     * ==================================================
-     */
+    if (!data) {
+      return;
+    }
+
+    /* =====================================================
+       CLEAR OLD LAYERS
+    ===================================================== */
 
     floodZonesRef.current.forEach(
       (layer) => {
@@ -737,15 +729,33 @@ export default function MapView() {
       }
     );
 
+    backendDrainageMarkersRef.current.forEach(
+      (layer) => {
+        map.removeLayer(layer);
+      }
+    );
+
+    backendFloodMarkersRef.current.forEach(
+      (layer) => {
+        map.removeLayer(layer);
+      }
+    );
+
     floodZonesRef.current = [];
     hotspotMarkersRef.current = [];
     drainageMarkersRef.current = [];
     drainageLinesRef.current = [];
+    backendDrainageMarkersRef.current = [];
+    backendFloodMarkersRef.current = [];
+
+    /* =====================================================
+       PROTOTYPE FLOOD ZONES
+    ===================================================== */
 
     /*
-     * ==================================================
-     * FLOOD RISK ZONES
-     * ==================================================
+     * The backend does not currently return geographic
+     * flood polygons. These therefore remain prototype
+     * visualization data.
      */
 
     if (
@@ -787,7 +797,7 @@ export default function MapView() {
             );
 
           polygon.bindTooltip(
-            `${zone.label} • ${zone.risk}`,
+            `${zone.label} • ${zone.risk} • Prototype zone`,
             {
               direction: "top",
             }
@@ -802,10 +812,15 @@ export default function MapView() {
       );
     }
 
+    /* =====================================================
+       PROTOTYPE HOTSPOTS
+    ===================================================== */
+
     /*
-     * ==================================================
-     * FLOOD HOTSPOTS
-     * ==================================================
+     * The backend currently does not provide a complete
+     * street-level hotspot geometry dataset.
+     *
+     * These remain prototype visualization points.
      */
 
     if (
@@ -836,7 +851,7 @@ export default function MapView() {
             );
 
           marker.bindTooltip(
-            `${hotspot.label} • ${hotspot.risk}`,
+            `${hotspot.label} • ${hotspot.risk} • Prototype hotspot`,
             {
               direction: "top",
             }
@@ -846,8 +861,7 @@ export default function MapView() {
             "click",
             () => {
               dispatch({
-                type:
-                  "SELECT_HOTSPOT",
+                type: "SELECT_HOTSPOT",
                 id: hotspot.id,
               });
             }
@@ -862,25 +876,36 @@ export default function MapView() {
       );
     }
 
+    /* =====================================================
+       DRAINAGE NETWORK
+    ===================================================== */
+
+    const hasBackendDrainage =
+      city === "delhi" &&
+      drainageAssets.length > 0;
+
     /*
-     * ==================================================
-     * DRAINAGE NETWORK
-     * ==================================================
+     * For Delhi, the backend drainage assets take
+     * priority whenever they are available.
+     *
+     * The prototype drainage network is shown only when:
+     *
+     * 1. Backend drainage data is unavailable, or
+     * 2. The backend request failed.
+     *
+     * This prevents duplicate mock + backend drainage
+     * markers from appearing on the map.
      */
 
     if (
-      state.activeLayers.has("drainage")
+      state.activeLayers.has("drainage") &&
+      (!hasBackendDrainage || backendError)
     ) {
       const nodePositions =
         new Map<
           string,
           [number, number]
         >();
-
-      /*
-       * Store every drainage node's
-       * geographic position.
-       */
 
       data.drainageNodes.forEach(
         (node) => {
@@ -895,10 +920,7 @@ export default function MapView() {
         }
       );
 
-      /*
-       * Draw connections between
-       * drainage nodes.
-       */
+      /* Prototype drainage edges */
 
       data.drainageEdges.forEach(
         (edge) => {
@@ -912,7 +934,9 @@ export default function MapView() {
               edge.to
             );
 
-          if (!from || !to) return;
+          if (!from || !to) {
+            return;
+          }
 
           const line =
             L.polyline(
@@ -932,11 +956,7 @@ export default function MapView() {
         }
       );
 
-      /*
-       * ==================================================
-       * DRAINAGE NODES
-       * ==================================================
-       */
+      /* Prototype drainage node colors */
 
       const nodeColors: Record<
         string,
@@ -948,6 +968,8 @@ export default function MapView() {
         Blocked: "#991B1B",
         Backflow: "#7C3AED",
       };
+
+      /* Prototype drainage nodes */
 
       data.drainageNodes.forEach(
         (node) => {
@@ -975,7 +997,7 @@ export default function MapView() {
             );
 
           marker.bindTooltip(
-            `${node.label} • ${node.status}`,
+            `${node.label} • ${node.status} • Prototype network`,
             {
               direction: "top",
             }
@@ -1000,26 +1022,340 @@ export default function MapView() {
         }
       );
     }
+
+    /* =====================================================
+       REAL BACKEND DRAINAGE ASSETS
+    ===================================================== */
+
+    if (
+      state.activeLayers.has("drainage") &&
+      city === "delhi" &&
+      !backendError
+    ) {
+      drainageAssets.forEach(
+        (asset) => {
+          const latitude =
+            getValidCoordinate(
+              asset.latitude
+            );
+
+          const longitude =
+            getValidCoordinate(
+              asset.longitude
+            );
+
+          /*
+           * Never render invalid coordinates.
+           */
+
+          if (
+            latitude === null ||
+            longitude === null
+          ) {
+            return;
+          }
+
+          const marker =
+            L.circleMarker(
+              [
+                latitude,
+                longitude,
+              ],
+              {
+                radius: 8,
+                color: "#ffffff",
+                weight: 2,
+                fillColor: "#2563EB",
+                fillOpacity: 0.95,
+              }
+            );
+
+          marker.bindTooltip(
+            `
+              <strong>${asset.name}</strong><br/>
+              SWMM node: ${
+                asset.swmm_node_id ||
+                "unmapped"
+              }<br/>
+              Condition: ${
+                asset.condition
+              }<br/>
+              <span style="color:#6B7280">
+                Backend model asset
+              </span>
+            `,
+            {
+              direction: "top",
+            }
+          );
+
+          marker.addTo(map);
+
+          backendDrainageMarkersRef.current.push(
+            marker
+          );
+        }
+      );
+    }
+
+    /* =====================================================
+       REAL BACKEND FLOOD MODEL NODES
+    ===================================================== */
+
+    /*
+     * The backend returns:
+     *
+     * - SWMM node ID
+     * - maximum depth
+     * - risk
+     * - flooding state
+     *
+     * It does not directly return coordinates for every
+     * SWMM node.
+     *
+     * Therefore we match each SWMM node against a backend
+     * drainage asset that has coordinates.
+     *
+     * We deliberately do NOT invent coordinates.
+     */
+
+    if (
+      state.activeLayers.has("floodRisk") &&
+      city === "delhi" &&
+      !backendError &&
+      floodStatus?.nodes
+    ) {
+      const assetByNode =
+        new Map<
+          string,
+          DrainageAsset
+        >();
+
+      drainageAssets.forEach(
+        (asset) => {
+          if (asset.swmm_node_id) {
+            assetByNode.set(
+              asset.swmm_node_id,
+              asset
+            );
+          }
+        }
+      );
+
+      floodStatus.nodes.forEach(
+        (node) => {
+          const asset =
+            assetByNode.get(
+              node.node
+            );
+
+          if (!asset) {
+            return;
+          }
+
+          const latitude =
+            getValidCoordinate(
+              asset.latitude
+            );
+
+          const longitude =
+            getValidCoordinate(
+              asset.longitude
+            );
+
+          if (
+            latitude === null ||
+            longitude === null
+          ) {
+            return;
+          }
+
+          const color =
+            backendRiskColor(
+              node.risk
+            );
+
+          const marker =
+            L.circleMarker(
+              [
+                latitude,
+                longitude,
+              ],
+              {
+                radius: node.flooding
+                  ? 11
+                  : 9,
+                color: "#ffffff",
+                weight: 2,
+                fillColor: color,
+                fillOpacity: 0.95,
+              }
+            );
+
+          const depthCm =
+            Number(node.max_depth_m) *
+            100;
+
+          marker.bindTooltip(
+            `
+              <strong>SWMM node ${
+                node.node
+              }</strong><br/>
+              Risk: ${node.risk}<br/>
+              Max depth: ${
+                Number.isFinite(
+                  depthCm
+                )
+                  ? depthCm.toFixed(1)
+                  : "—"
+              } cm<br/>
+              Status: ${backendNodeStatus(
+                node.risk,
+                node.flooding
+              )}<br/>
+              <span style="color:#6B7280">
+                Backend flood model
+              </span>
+            `,
+            {
+              direction: "top",
+            }
+          );
+
+          marker.addTo(map);
+
+          backendFloodMarkersRef.current.push(
+            marker
+          );
+        }
+      );
+    }
   }, [
     city,
     state.activeLayers,
     state.timeStep,
     dispatch,
+    drainageAssets,
+    floodStatus,
+    backendError,
   ]);
 
-  /*
-   * ==================================================
-   * MAP CONTAINER
-   * ==================================================
-   */
+  /* =======================================================
+     MAP CONTAINER
+  ======================================================= */
 
   return (
-    <div
-      ref={mapContainer}
-      style={{
-        width: "100%",
-        height: "500px",
-      }}
-    />
+    <div className="relative h-full w-full">
+      <div
+        ref={mapContainer}
+        style={{
+          width: "100%",
+          height: "500px",
+        }}
+      />
+
+      {/* ===================================================
+          BACKEND LOADING
+      =================================================== */}
+
+      {backendLoading && (
+        <div className="absolute left-3 top-3 z-1000 rounded-md border border-blue-200 bg-white/95 px-3 py-2 text-[11px] text-blue-800 shadow-sm">
+          Updating flood model…
+        </div>
+      )}
+
+      {/* ===================================================
+          BACKEND ERROR
+      =================================================== */}
+
+      {backendError && (
+        <div className="absolute bottom-3 left-3 z-1000 max-w-xs rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-4 text-amber-800 shadow-sm">
+          <strong>
+            Backend unavailable.
+          </strong>
+
+          <br />
+
+          Showing prototype map data.
+        </div>
+      )}
+
+      {/* ===================================================
+          BACKEND MODEL SUMMARY
+      =================================================== */}
+
+      {!backendLoading &&
+        !backendError &&
+        floodStatus && (
+          <div className="absolute left-3 top-3 z-1000 rounded-md border border-stone-200 bg-white/95 px-3 py-2 shadow-sm">
+            <div className="text-[9px] font-semibold uppercase tracking-wide text-stone-500">
+              Backend flood model
+            </div>
+
+            <div className="mt-1 flex items-center gap-2">
+              <span
+                className="h-2.5 w-2.5 rounded-full"
+                style={{
+                  backgroundColor:
+                    backendRiskColor(
+                      floodStatus.overall_risk ||
+                        undefined
+                    ),
+                }}
+              />
+
+              <span className="text-xs font-bold uppercase text-stone-800">
+                {floodStatus.overall_risk ||
+                  floodStatus.status}
+              </span>
+            </div>
+
+            {typeof floodStatus.confidence ===
+              "number" && (
+              <div className="mt-1 text-[10px] text-stone-500">
+                Model confidence{" "}
+                {Math.round(
+                  floodStatus.confidence * 100
+                )}
+                %
+              </div>
+            )}
+
+            {typeof floodStatus.peak_depth_m ===
+              "number" && (
+              <div className="mt-0.5 text-[10px] text-stone-500">
+                Peak depth{" "}
+                {(
+                  floodStatus.peak_depth_m *
+                  100
+                ).toFixed(1)}
+                cm
+              </div>
+            )}
+
+            {typeof floodStatus.forecast_rainfall_mm ===
+              "number" && (
+              <div className="mt-0.5 text-[10px] text-stone-500">
+                Forecast rainfall{" "}
+                {floodStatus.forecast_rainfall_mm.toFixed(
+                  1
+                )}
+                mm
+              </div>
+            )}
+
+            {floodStatus.critical_nodes &&
+              floodStatus.critical_nodes.length >
+                0 && (
+                <div className="mt-1 text-[10px] text-stone-500">
+                  Critical nodes{" "}
+                  {floodStatus.critical_nodes.join(
+                    ", "
+                  )}
+                </div>
+              )}
+          </div>
+        )}
+    </div>
   );
 }

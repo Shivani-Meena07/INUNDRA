@@ -1,8 +1,5 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApp } from "../../state/AppContext";
-import {
-  cityData,
-  DrainageNodeStatus,
-} from "../../data/mockData";
 import StatusBadge from "../../components/ui/StatusBadge";
 import {
   X,
@@ -14,10 +11,87 @@ import {
   Waves,
   ShieldAlert,
   Network,
+  RefreshCw,
+  Database,
+  MapPin,
+  AlertCircle,
 } from "lucide-react";
 
+import {
+  DrainageAsset,
+  FloodNode,
+  FloodStatusResponse,
+  getDrainageAssets,
+  getFloodStatus,
+} from "../../data/api";
+
+type DrainageStatus =
+  | "Normal"
+  | "Warning"
+  | "Overloaded"
+  | "Blocked"
+  | "Backflow";
+
+interface DrainageViewNode {
+  id: string;
+  assetId: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  condition: string;
+  swmmNodeId?: string | null;
+  status: DrainageStatus;
+  risk: string;
+  maxDepthM: number;
+  flooding: boolean;
+}
+
+function deriveStatus(
+  asset: DrainageAsset,
+  floodNode?: FloodNode
+): DrainageStatus {
+  const condition =
+    asset.condition?.toLowerCase() ?? "";
+
+  const risk =
+    floodNode?.risk?.toLowerCase() ?? "";
+
+  if (
+    floodNode?.flooding ||
+    risk === "critical"
+  ) {
+    return "Overloaded";
+  }
+
+  if (risk === "high") {
+    return "Warning";
+  }
+
+  if (
+    condition.includes("blocked") ||
+    condition.includes("blockage")
+  ) {
+    return "Blocked";
+  }
+
+  if (condition.includes("backflow")) {
+    return "Backflow";
+  }
+
+  if (
+    condition.includes("warning") ||
+    condition.includes("stress") ||
+    risk === "moderate" ||
+    risk === "medium"
+  ) {
+    return "Warning";
+  }
+
+  return "Normal";
+}
+
 const nodeColors: Record<
-  DrainageNodeStatus,
+  DrainageStatus,
   string
 > = {
   Normal: "#16A34A",
@@ -28,7 +102,7 @@ const nodeColors: Record<
 };
 
 const nodeFill: Record<
-  DrainageNodeStatus,
+  DrainageStatus,
   string
 > = {
   Normal: "rgba(22,163,74,0.12)",
@@ -38,138 +112,250 @@ const nodeFill: Record<
   Backflow: "rgba(124,58,237,0.15)",
 };
 
-function CapacityBar({
-  value,
-}: {
-  value: number;
-}) {
-  const color =
-    value >= 90
-      ? "#DC2626"
-      : value >= 75
-      ? "#D97706"
-      : "#16A34A";
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-[10px] font-mono text-warm-400">
-          CAPACITY UTILIZATION
-        </span>
-
-        <span
-          className="font-mono text-xs font-bold"
-          style={{ color }}
-        >
-          {value}%
-        </span>
-      </div>
-
-      <div className="h-2 bg-warm-100 overflow-hidden">
-        <div
-          className="h-full transition-all"
-          style={{
-            width: `${Math.min(value, 100)}%`,
-            backgroundColor: color,
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
 function getStatusDescription(
-  status: DrainageNodeStatus
+  status: DrainageStatus
 ) {
   switch (status) {
     case "Normal":
-      return "Operating within expected capacity";
+      return "No critical drainage condition is currently reported.";
+
     case "Warning":
-      return "Approaching hydraulic capacity";
+      return "The model indicates elevated hydraulic risk at this location.";
+
     case "Overloaded":
-      return "Hydraulic capacity exceeded";
+      return "Flood-model output indicates significant hydraulic stress.";
+
     case "Blocked":
-      return "Flow restriction detected";
+      return "A blockage condition is reported for this drainage asset.";
+
     case "Backflow":
-      return "Downstream pressure causing reverse flow";
+      return "Reverse-flow condition is reported for this drainage asset.";
+
     default:
-      return "Status unavailable";
+      return "Status unavailable.";
+  }
+}
+
+function formatDepth(depthM: number) {
+  return `${(depthM * 100).toFixed(1)} cm`;
+}
+
+function getNodeRiskClass(risk: string) {
+  switch (risk.toLowerCase()) {
+    case "critical":
+      return "text-red-700";
+
+    case "high":
+      return "text-orange-700";
+
+    case "moderate":
+    case "medium":
+      return "text-amber-700";
+
+    case "low":
+      return "text-lime-700";
+
+    case "safe":
+      return "text-green-700";
+
+    default:
+      return "text-warm-700";
   }
 }
 
 export default function DrainageScreen() {
   const { state, dispatch } = useApp();
 
-  const data = cityData[state.city];
+  const [assets, setAssets] = useState<
+    DrainageAsset[]
+  >([]);
 
-  const selectedNode = data.drainageNodes.find(
-    (n) =>
-      n.id === state.selectedDrainageNode
-  );
+  const [floodStatus, setFloodStatus] =
+    useState<FloodStatusResponse | null>(null);
 
-  // Build node position map
-  const nodePos: Record<
-    string,
-    { x: number; y: number }
-  > = {};
+  const [loading, setLoading] =
+    useState(true);
 
-  data.drainageNodes.forEach((node) => {
-    nodePos[node.id] = {
-      x: node.x,
-      y: node.y,
-    };
-  });
+  const [error, setError] =
+    useState<string | null>(null);
 
-  const counts = {
-    Normal: data.drainageNodes.filter(
-      (n) => n.status === "Normal"
-    ).length,
+  const [lastUpdated, setLastUpdated] =
+    useState<Date | null>(null);
 
-    Warning: data.drainageNodes.filter(
-      (n) => n.status === "Warning"
-    ).length,
+  const loadData = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
 
-    Overloaded: data.drainageNodes.filter(
-      (n) => n.status === "Overloaded"
-    ).length,
+      const [
+        drainageAssets,
+        flood,
+      ] = await Promise.all([
+        getDrainageAssets(),
+        getFloodStatus({
+          includeAiSummary: false,
+        }),
+      ]);
 
-    Blocked: data.drainageNodes.filter(
-      (n) => n.status === "Blocked"
-    ).length,
+      setAssets(drainageAssets);
+      setFloodStatus(flood);
+      setLastUpdated(new Date());
+    } catch (err) {
+      console.error(
+        "Drainage API error:",
+        err
+      );
 
-    Backflow: data.drainageNodes.filter(
-      (n) => n.status === "Backflow"
-    ).length,
-  };
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load drainage information."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  const averageCapacity =
-    data.drainageNodes.length > 0
-      ? Math.round(
-          data.drainageNodes.reduce(
-            (sum, node) =>
-              sum + node.capacity,
-            0
-          ) / data.drainageNodes.length
-        )
-      : 0;
+  useEffect(() => {
+    loadData();
 
-  const criticalNodes =
-    data.drainageNodes.filter(
-      (node) =>
-        node.status === "Blocked" ||
-        node.status === "Backflow" ||
-        node.status === "Overloaded"
+    const interval = window.setInterval(
+      loadData,
+      5 * 60 * 1000
     );
 
-  const mostStressedNode =
-    [...data.drainageNodes].sort(
-      (a, b) => b.capacity - a.capacity
-    )[0];
+    return () =>
+      window.clearInterval(interval);
+  }, [loadData]);
 
-  const totalFlow = data.drainageNodes.reduce(
-    (sum, node) => sum + node.flow,
-    0
+  /*
+   * Combine:
+   * /api/assets/drainage
+   * +
+   * /api/flood/status
+   *
+   * using swmm_node_id as the connection key.
+   */
+  const nodes = useMemo<
+    DrainageViewNode[]
+  >(() => {
+    return assets.map((asset) => {
+      const floodNode =
+        floodStatus?.nodes?.find(
+          (node) =>
+            node.node ===
+            asset.swmm_node_id
+        );
+
+      return {
+        id:
+          asset.swmm_node_id ??
+          String(asset.id),
+
+        assetId: asset.id,
+
+        name: asset.name,
+
+        latitude: asset.latitude,
+
+        longitude: asset.longitude,
+
+        condition:
+          asset.condition ?? "Unknown",
+
+        swmmNodeId:
+          asset.swmm_node_id,
+
+        status: deriveStatus(
+          asset,
+          floodNode
+        ),
+
+        risk:
+          floodNode?.risk ??
+          "unavailable",
+
+        maxDepthM:
+          floodNode?.max_depth_m ?? 0,
+
+        flooding:
+          floodNode?.flooding ?? false,
+      };
+    });
+  }, [assets, floodStatus]);
+
+  const selectedNode = nodes.find(
+    (node) =>
+      node.id ===
+      state.selectedDrainageNode
   );
+
+  const counts = useMemo(() => {
+    return {
+      Normal: nodes.filter(
+        (node) =>
+          node.status === "Normal"
+      ).length,
+
+      Warning: nodes.filter(
+        (node) =>
+          node.status === "Warning"
+      ).length,
+
+      Overloaded: nodes.filter(
+        (node) =>
+          node.status === "Overloaded"
+      ).length,
+
+      Blocked: nodes.filter(
+        (node) =>
+          node.status === "Blocked"
+      ).length,
+
+      Backflow: nodes.filter(
+        (node) =>
+          node.status === "Backflow"
+      ).length,
+    };
+  }, [nodes]);
+
+  const criticalNodes = nodes.filter(
+    (node) =>
+      node.status === "Blocked" ||
+      node.status === "Backflow" ||
+      node.status === "Overloaded"
+  );
+
+  const floodedNodes = nodes.filter(
+    (node) => node.flooding
+  );
+
+  const highestDepthNode = useMemo(() => {
+    if (!nodes.length) {
+      return null;
+    }
+
+    return [...nodes].sort(
+      (a, b) =>
+        b.maxDepthM - a.maxDepthM
+    )[0];
+  }, [nodes]);
+
+  const averageDepthCm = useMemo(() => {
+    if (!nodes.length) {
+      return 0;
+    }
+
+    return (
+      (nodes.reduce(
+        (sum, node) =>
+          sum + node.maxDepthM,
+        0
+      ) /
+        nodes.length) *
+      100
+    );
+  }, [nodes]);
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-6 md:py-8">
@@ -182,23 +368,129 @@ export default function DrainageScreen() {
         <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
           <div>
             <h1 className="text-xl md:text-2xl font-bold text-warm-900">
-              Drainage Network — {data.name}
+              Drainage Network —{" "}
+              {state.city}
             </h1>
 
             <p className="text-sm text-warm-500 mt-1">
-              Hydraulic network status · Select a node to inspect
+              Backend drainage assets and flood-model node status
             </p>
           </div>
 
-          <div className="flex items-center gap-2 text-xs font-mono text-warm-500">
-            <span className="w-2 h-2 rounded-full bg-green-600" />
-            Network model active
+          <div className="flex items-center gap-3">
+            {lastUpdated &&
+              !loading && (
+                <span className="text-[10px] font-mono text-warm-400">
+                  Updated{" "}
+                  {lastUpdated.toLocaleTimeString(
+                    [],
+                    {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    }
+                  )}
+                </span>
+              )}
+
+            <button
+              onClick={loadData}
+              disabled={loading}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-warm-700 border border-warm-200 bg-white hover:bg-warm-50 disabled:opacity-50"
+            >
+              <RefreshCw
+                size={13}
+                className={
+                  loading
+                    ? "animate-spin"
+                    : ""
+                }
+              />
+
+              Refresh
+            </button>
           </div>
         </div>
       </div>
 
+      {/* Loading */}
+      {loading &&
+        !nodes.length && (
+          <div className="border border-warm-200 bg-white px-4 py-4 mb-6 flex items-center gap-3">
+            <RefreshCw
+              size={16}
+              className="animate-spin text-maroon-700"
+            />
+
+            <div>
+              <div className="text-sm font-medium text-warm-800">
+                Loading drainage model
+              </div>
+
+              <div className="text-[11px] font-mono text-warm-400 mt-0.5">
+                Fetching drainage assets and flood-model output
+              </div>
+            </div>
+          </div>
+        )}
+
+      {/* Error */}
+      {error && (
+        <div className="border border-red-200 bg-red-50 px-4 py-4 mb-6 flex items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle
+              size={17}
+              className="text-red-600 mt-0.5 shrink-0"
+            />
+
+            <div>
+              <div className="text-sm font-semibold text-red-900">
+                Drainage data unavailable
+              </div>
+
+              <div className="text-xs text-red-700 mt-1">
+                {error}
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={loadData}
+            className="shrink-0 text-xs font-medium text-red-700 border border-red-200 bg-white px-3 py-2"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* Backend source */}
+      {nodes.length > 0 && (
+        <div className="border border-green-200 bg-green-50 px-4 py-3 mb-6">
+          <div className="flex items-center gap-2">
+            <Database
+              size={14}
+              className="text-green-700"
+            />
+
+            <div>
+              <div className="text-xs font-semibold text-green-900">
+                Backend drainage model connected
+              </div>
+
+              <div className="text-[10px] font-mono text-green-700 mt-0.5">
+                {nodes.length} drainage asset
+                {nodes.length !== 1
+                  ? "s"
+                  : ""}{" "}
+                matched with current model output
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Network health */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        {/* Peak depth */}
         <div className="bg-white border border-warm-200 p-4">
           <div className="flex items-center gap-2 mb-2">
             <Gauge
@@ -207,27 +499,24 @@ export default function DrainageScreen() {
             />
 
             <span className="text-[10px] font-mono uppercase tracking-wide text-warm-500">
-              Avg. utilization
+              Peak depth
             </span>
           </div>
 
-          <div
-            className={`text-2xl font-bold font-mono ${
-              averageCapacity >= 90
-                ? "text-red-700"
-                : averageCapacity >= 75
-                ? "text-amber-700"
-                : "text-green-700"
-            }`}
-          >
-            {averageCapacity}%
+          <div className="text-2xl font-bold font-mono text-warm-900">
+            {highestDepthNode
+              ? formatDepth(
+                  highestDepthNode.maxDepthM
+                )
+              : "—"}
           </div>
 
           <div className="text-[10px] text-warm-400 mt-1">
-            Across monitored nodes
+            Highest simulated node depth
           </div>
         </div>
 
+        {/* Model nodes */}
         <div className="bg-white border border-warm-200 p-4">
           <div className="flex items-center gap-2 mb-2">
             <Network
@@ -236,19 +525,20 @@ export default function DrainageScreen() {
             />
 
             <span className="text-[10px] font-mono uppercase tracking-wide text-warm-500">
-              Network nodes
+              Model nodes
             </span>
           </div>
 
           <div className="text-2xl font-bold font-mono text-warm-900">
-            {data.drainageNodes.length}
+            {nodes.length}
           </div>
 
           <div className="text-[10px] text-warm-400 mt-1">
-            {data.drainageEdges.length} connected segments
+            Backend drainage assets
           </div>
         </div>
 
+        {/* Critical nodes */}
         <div className="bg-white border border-warm-200 p-4">
           <div className="flex items-center gap-2 mb-2">
             <ShieldAlert
@@ -272,10 +562,11 @@ export default function DrainageScreen() {
           </div>
 
           <div className="text-[10px] text-warm-400 mt-1">
-            Overloaded, blocked or backflow
+            Based on current model output
           </div>
         </div>
 
+        {/* Flooding */}
         <div className="bg-white border border-warm-200 p-4">
           <div className="flex items-center gap-2 mb-2">
             <Waves
@@ -284,16 +575,22 @@ export default function DrainageScreen() {
             />
 
             <span className="text-[10px] font-mono uppercase tracking-wide text-warm-500">
-              Total flow
+              Flooding
             </span>
           </div>
 
-          <div className="text-2xl font-bold font-mono text-warm-900">
-            {totalFlow.toFixed(1)}
+          <div
+            className={`text-2xl font-bold font-mono ${
+              floodedNodes.length > 0
+                ? "text-red-700"
+                : "text-green-700"
+            }`}
+          >
+            {floodedNodes.length}
           </div>
 
           <div className="text-[10px] text-warm-400 mt-1">
-            m³/s across monitored nodes
+            Nodes currently flagged
           </div>
         </div>
       </div>
@@ -304,32 +601,38 @@ export default function DrainageScreen() {
           Object.entries(
             counts
           ) as [
-            DrainageNodeStatus,
+            DrainageStatus,
             number
           ][]
-        ).map(([status, count]) => (
-          <div
-            key={status}
-            className="bg-white border border-warm-200 px-3 py-2.5"
-          >
+        ).map(
+          ([status, count]) => (
             <div
-              className="text-lg font-bold font-mono"
-              style={{
-                color: nodeColors[status],
-              }}
+              key={status}
+              className="bg-white border border-warm-200 px-3 py-2.5"
             >
-              {count}
-            </div>
+              <div
+                className="text-lg font-bold font-mono"
+                style={{
+                  color:
+                    nodeColors[
+                      status
+                    ],
+                }}
+              >
+                {count}
+              </div>
 
-            <div className="text-[10px] text-warm-500 font-mono uppercase">
-              {status}
+              <div className="text-[10px] text-warm-500 font-mono uppercase">
+                {status}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        )}
       </div>
 
-      {/* Critical network alert */}
-      {criticalNodes.length > 0 && (
+      {/* Critical alert */}
+      {criticalNodes.length >
+        0 && (
         <div className="border border-red-200 bg-red-50 px-4 py-3 mb-6">
           <div className="flex items-start gap-3">
             <AlertTriangle
@@ -343,17 +646,12 @@ export default function DrainageScreen() {
               </div>
 
               <p className="text-xs text-red-800 mt-1">
-                {criticalNodes.length} node
-                {criticalNodes.length !== 1
+                {criticalNodes.length} model node
+                {criticalNodes.length !==
+                1
                   ? "s"
                   : ""}{" "}
-                currently show{" "}
-                {criticalNodes.some(
-                  (n) => n.status === "Blocked"
-                )
-                  ? "blockage or"
-                  : ""}
-                hydraulic stress. These locations can amplify surface flooding.
+                currently show elevated drainage or flood risk.
               </p>
             </div>
           </div>
@@ -368,11 +666,11 @@ export default function DrainageScreen() {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="text-sm font-semibold text-warm-900">
-                    Network Schematic
+                    Drainage Asset Map
                   </div>
 
                   <div className="text-[11px] text-warm-400 font-mono mt-0.5">
-                    Nodes = drainage assets · Lines = network connections
+                    Current backend assets · select a node to inspect
                   </div>
                 </div>
 
@@ -383,285 +681,144 @@ export default function DrainageScreen() {
               </div>
             </div>
 
-            <div className="p-2 overflow-hidden">
-              <svg
-                viewBox="80 100 600 300"
-                className="w-full"
-                style={{
-                  minHeight: "280px",
-                }}
-              >
-                {/* Background */}
-                <rect
-                  x="80"
-                  y="100"
-                  width="600"
-                  height="300"
-                  fill="#F8F6F2"
-                  rx="3"
-                />
+            <div className="p-4">
+              {nodes.length >
+              0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {nodes.map(
+                    (node) => {
+                      const isSelected =
+                        state.selectedDrainageNode ===
+                        node.id;
 
-                {/* Grid */}
-                {[130, 180, 230, 280, 330, 380].map(
-                  (y) => (
-                    <line
-                      key={y}
-                      x1="90"
-                      x2="670"
-                      y1={y}
-                      y2={y}
-                      stroke="#E5E0DA"
-                      strokeWidth="0.5"
-                    />
-                  )
-                )}
+                      const color =
+                        nodeColors[
+                          node.status
+                        ];
 
-                {[120, 180, 240, 300, 360, 420, 480, 540, 600, 660].map(
-                  (x) => (
-                    <line
-                      key={x}
-                      x1={x}
-                      x2={x}
-                      y1="105"
-                      y2="395"
-                      stroke="#E5E0DA"
-                      strokeWidth="0.5"
-                    />
-                  )
-                )}
+                      return (
+                        <button
+                          key={
+                            node.id
+                          }
+                          onClick={() =>
+                            dispatch({
+                              type: "SELECT_DRAINAGE_NODE",
+                              id: isSelected
+                                ? null
+                                : node.id,
+                            })
+                          }
+                          className={`text-left border p-4 transition-colors ${
+                            isSelected
+                              ? "border-maroon-300 bg-maroon-50"
+                              : "border-warm-200 bg-warm-50 hover:bg-white"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-start gap-3">
+                              <div
+                                className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+                                style={{
+                                  backgroundColor:
+                                    nodeFill[
+                                      node.status
+                                    ],
+                                }}
+                              >
+                                <div
+                                  className="w-3.5 h-3.5 rounded-full"
+                                  style={{
+                                    backgroundColor:
+                                      color,
+                                  }}
+                                />
+                              </div>
 
-                {/* Network edges */}
-                {data.drainageEdges.map(
-                  (edge, i) => {
-                    const from =
-                      nodePos[edge.from];
-                    const to =
-                      nodePos[edge.to];
+                              <div>
+                                <div className="text-sm font-bold font-mono text-warm-900">
+                                  {
+                                    node.id
+                                  }
+                                </div>
 
-                    if (!from || !to) {
-                      return null;
+                                <div className="text-xs text-warm-600 mt-0.5">
+                                  {
+                                    node.name
+                                  }
+                                </div>
+                              </div>
+                            </div>
+
+                            <StatusBadge
+                              level={
+                                node.status
+                              }
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 mt-4">
+                            <div>
+                              <div className="text-[9px] uppercase font-mono text-warm-400">
+                                Model depth
+                              </div>
+
+                              <div className="text-sm font-bold font-mono text-warm-800 mt-1">
+                                {formatDepth(
+                                  node.maxDepthM
+                                )}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="text-[9px] uppercase font-mono text-warm-400">
+                                Model risk
+                              </div>
+
+                              <div
+                                className={`text-sm font-bold font-mono mt-1 ${getNodeRiskClass(
+                                  node.risk
+                                )}`}
+                              >
+                                {
+                                  node.risk
+                                }
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 mt-3 text-[10px] text-warm-400 font-mono">
+                            <MapPin
+                              size={
+                                11
+                              }
+                            />
+
+                            {node.latitude.toFixed(
+                              4
+                            )}
+                            ,{" "}
+                            {node.longitude.toFixed(
+                              4
+                            )}
+                          </div>
+                        </button>
+                      );
                     }
+                  )}
+                </div>
+              ) : (
+                <div className="py-12 text-center text-warm-400">
+                  <Network
+                    size={32}
+                    className="mx-auto mb-3 opacity-30"
+                  />
 
-                    const fromNode =
-                      data.drainageNodes.find(
-                        (n) =>
-                          n.id === edge.from
-                      );
-
-                    const toNode =
-                      data.drainageNodes.find(
-                        (n) =>
-                          n.id === edge.to
-                      );
-
-                    const stressed =
-                      fromNode &&
-                      (
-                        fromNode.status ===
-                          "Overloaded" ||
-                        fromNode.status ===
-                          "Backflow" ||
-                        fromNode.status ===
-                          "Blocked"
-                      );
-
-                    const edgeColor =
-                      stressed
-                        ? "#DC2626"
-                        : "#2563EB";
-
-                    return (
-                      <g key={i}>
-                        <line
-                          x1={from.x}
-                          y1={from.y}
-                          x2={to.x}
-                          y2={to.y}
-                          stroke={edgeColor}
-                          strokeWidth={
-                            stressed ? 2.5 : 1.5
-                          }
-                          strokeDasharray={
-                            stressed
-                              ? "5,3"
-                              : "3,2"
-                          }
-                          opacity={
-                            stressed ? 0.7 : 0.45
-                          }
-                        />
-
-                        {/* Flow indicator */}
-                        <circle
-                          cx={
-                            (from.x + to.x) /
-                            2
-                          }
-                          cy={
-                            (from.y + to.y) /
-                            2
-                          }
-                          r="3"
-                          fill={edgeColor}
-                          opacity="0.7"
-                        />
-
-                        {/* Direction marker */}
-                        <circle
-                          cx={
-                            from.x * 0.35 +
-                            to.x * 0.65
-                          }
-                          cy={
-                            from.y * 0.35 +
-                            to.y * 0.65
-                          }
-                          r="1.5"
-                          fill={edgeColor}
-                        />
-                      </g>
-                    );
-                  }
-                )}
-
-                {/* Nodes */}
-                {data.drainageNodes.map(
-                  (node) => {
-                    const isSelected =
-                      state.selectedDrainageNode ===
-                      node.id;
-
-                    const isCritical =
-                      node.status ===
-                        "Blocked" ||
-                      node.status ===
-                        "Backflow" ||
-                      node.status ===
-                        "Overloaded";
-
-                    return (
-                      <g
-                        key={node.id}
-                        className="cursor-pointer"
-                        onClick={() =>
-                          dispatch({
-                            type: "SELECT_DRAINAGE_NODE",
-                            id: isSelected
-                              ? null
-                              : node.id,
-                          })
-                        }
-                      >
-                        {/* Critical halo */}
-                        {isCritical && (
-                          <circle
-                            cx={node.x}
-                            cy={node.y}
-                            r="20"
-                            fill="none"
-                            stroke={
-                              nodeColors[
-                                node.status
-                              ]
-                            }
-                            strokeWidth="1"
-                            strokeDasharray="3,3"
-                            opacity="0.45"
-                          />
-                        )}
-
-                        {/* Status area */}
-                        <circle
-                          cx={node.x}
-                          cy={node.y}
-                          r="16"
-                          fill={
-                            nodeFill[
-                              node.status
-                            ]
-                          }
-                        />
-
-                        {/* Node */}
-                        <circle
-                          cx={node.x}
-                          cy={node.y}
-                          r={
-                            isSelected
-                              ? 10
-                              : 8
-                          }
-                          fill={
-                            nodeColors[
-                              node.status
-                            ]
-                          }
-                        />
-
-                        <circle
-                          cx={node.x}
-                          cy={node.y}
-                          r={
-                            isSelected
-                              ? 10
-                              : 8
-                          }
-                          stroke="white"
-                          strokeWidth="1.5"
-                          fill="none"
-                        />
-
-                        {/* Selection ring */}
-                        {isSelected && (
-                          <circle
-                            cx={node.x}
-                            cy={node.y}
-                            r="14"
-                            fill="none"
-                            stroke={
-                              nodeColors[
-                                node.status
-                              ]
-                            }
-                            strokeWidth="1.5"
-                            strokeDasharray="3,2"
-                          />
-                        )}
-
-                        {/* Node ID */}
-                        <text
-                          x={node.x}
-                          y={node.y + 27}
-                          textAnchor="middle"
-                          fontSize="9"
-                          fill="#4A4540"
-                          fontFamily="DM Mono, monospace"
-                          fontWeight="500"
-                        >
-                          {node.id}
-                        </text>
-
-                        {/* Capacity */}
-                        <text
-                          x={node.x}
-                          y={node.y - 20}
-                          textAnchor="middle"
-                          fontSize="8"
-                          fill={
-                            nodeColors[
-                              node.status
-                            ]
-                          }
-                          fontFamily="DM Mono, monospace"
-                          fontWeight="500"
-                        >
-                          {node.capacity}%
-                        </text>
-                      </g>
-                    );
-                  }
-                )}
-              </svg>
+                  <p className="text-sm">
+                    No drainage assets are currently available.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Legend */}
@@ -670,7 +827,7 @@ export default function DrainageScreen() {
                 Object.entries(
                   nodeColors
                 ) as [
-                  DrainageNodeStatus,
+                  DrainageStatus,
                   string
                 ][]
               ).map(
@@ -682,7 +839,8 @@ export default function DrainageScreen() {
                     <div
                       className="w-3 h-3 rounded-full"
                       style={{
-                        backgroundColor: color,
+                        backgroundColor:
+                          color,
                       }}
                     />
 
@@ -692,22 +850,6 @@ export default function DrainageScreen() {
                   </div>
                 )
               )}
-
-              <div className="flex items-center gap-1.5">
-                <div className="w-6 border-t border-dashed border-blue-500" />
-
-                <span className="text-[10px] text-warm-500 font-mono">
-                  Flow
-                </span>
-              </div>
-
-              <div className="flex items-center gap-1.5">
-                <div className="w-6 border-t-2 border-dashed border-red-500" />
-
-                <span className="text-[10px] text-warm-500 font-mono">
-                  Stressed flow
-                </span>
-              </div>
             </div>
           </div>
 
@@ -725,17 +867,15 @@ export default function DrainageScreen() {
             </div>
 
             <p className="text-xs text-warm-700 leading-relaxed">
-              {mostStressedNode
-                ? `${mostStressedNode.id} is currently the most capacity-constrained node at ${mostStressedNode.capacity}% utilization. ${
-                    criticalNodes.length > 0
-                      ? `${criticalNodes.length} critical node${
-                          criticalNodes.length !== 1
-                            ? "s"
-                            : ""
-                        } may contribute to downstream surface flooding.`
-                      : "No critical drainage failure is currently represented in the model."
-                  }`
-                : "No drainage node information is available."}
+              {highestDepthNode
+                ? `Node ${
+                    highestDepthNode.id
+                  } currently has the highest simulated depth at ${formatDepth(
+                    highestDepthNode.maxDepthM
+                  )}. Average simulated depth across the matched nodes is ${averageDepthCm.toFixed(
+                    1
+                  )} cm.`
+                : "No drainage model output is currently available."}
             </p>
           </div>
         </div>
@@ -748,18 +888,18 @@ export default function DrainageScreen() {
               <div className="px-4 py-3 border-b border-warm-100 flex items-start justify-between">
                 <div>
                   <div className="text-[10px] font-mono text-warm-400 mb-0.5">
-                    DRAINAGE NODE
+                    DRAINAGE ASSET
                   </div>
 
                   <div className="text-sm font-bold text-warm-900">
-                    {selectedNode.id}
+                    {
+                      selectedNode.id
+                    }
                   </div>
 
                   <div className="text-xs text-warm-500">
                     {
-                      selectedNode.label.split(
-                        "•"
-                      )[1]
+                      selectedNode.name
                     }
                   </div>
                 </div>
@@ -799,204 +939,152 @@ export default function DrainageScreen() {
                   )}
                 </div>
 
-                {/* Capacity */}
-                <CapacityBar
-                  value={selectedNode.capacity}
-                />
-
-                {/* Hydraulic metrics */}
-                <div>
-                  <div className="text-[10px] font-mono uppercase tracking-wide text-warm-400 mb-2">
-                    Hydraulic metrics
-                  </div>
-
-                  <div className="space-y-2">
-                    {[
-                      {
-                        label: "Flow Rate",
-                        value: `${selectedNode.flow} m³/s`,
-                      },
-                      {
-                        label: "Design Capacity",
-                        value: `${selectedNode.designCapacity} m³/s`,
-                      },
-                      {
-                        label: "Upstream Inflow",
-                        value: `${selectedNode.upstreamInflow} m³/s`,
-                        highlight:
-                          selectedNode.upstreamInflow >
-                          selectedNode.designCapacity,
-                      },
-                    ].map((row) => (
-                      <div
-                        key={row.label}
-                        className="flex items-center justify-between text-xs"
-                      >
-                        <span className="text-warm-500">
-                          {row.label}
-                        </span>
-
-                        <span
-                          className={`font-mono font-medium ${
-                            row.highlight
-                              ? "text-red-600"
-                              : "text-warm-800"
-                          }`}
-                        >
-                          {row.value}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <hr className="border-warm-100" />
-
-                {/* Downstream */}
-                <div>
-                  <div className="text-[10px] font-mono uppercase tracking-wide text-warm-400 mb-2">
-                    Downstream condition
+                {/* Model risk */}
+                <div className="border border-warm-200 bg-warm-50 p-3">
+                  <div className="text-[9px] uppercase font-mono text-warm-400">
+                    Flood model risk
                   </div>
 
                   <div
-                    className={`border p-3 ${
-                      selectedNode.status ===
-                        "Blocked" ||
-                      selectedNode.status ===
-                        "Backflow"
-                        ? "bg-red-50 border-red-200"
-                        : "bg-warm-50 border-warm-200"
-                    }`}
+                    className={`text-lg font-bold font-mono mt-1 ${getNodeRiskClass(
+                      selectedNode.risk
+                    )}`}
                   >
-                    <div className="flex items-start gap-2">
-                      {selectedNode.status ===
-                      "Backflow" ? (
-                        <ArrowUp
-                          size={14}
-                          className="text-purple-600 mt-0.5"
-                        />
-                      ) : (
-                        <ArrowDown
-                          size={14}
-                          className="text-warm-500 mt-0.5"
-                        />
+                    {
+                      selectedNode.risk
+                    }
+                  </div>
+                </div>
+
+                {/* Depth */}
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-wide text-warm-400 mb-2">
+                    Simulated depth
+                  </div>
+
+                  <div className="border border-warm-200 p-3">
+                    <div className="text-xl font-bold font-mono text-warm-900">
+                      {formatDepth(
+                        selectedNode.maxDepthM
                       )}
+                    </div>
 
-                      <div>
-                        <div className="text-xs font-medium text-warm-800">
-                          {
-                            selectedNode.downstreamCondition
-                          }
-                        </div>
-
-                        <div className="text-[10px] text-warm-500 mt-1">
-                          Downstream conditions influence pressure and flow through this node.
-                        </div>
-                      </div>
+                    <div className="text-[10px] text-warm-400 mt-1">
+                      Maximum depth returned by the flood model
                     </div>
                   </div>
                 </div>
 
-                {/* Predicted impact */}
+                {/* Flooding */}
                 <div>
                   <div className="text-[10px] font-mono uppercase tracking-wide text-warm-400 mb-2">
-                    Predicted impact
+                    Flooding state
                   </div>
 
-                  <div className="bg-amber-50 border border-amber-200 p-3">
-                    <div className="text-xs text-amber-900 leading-relaxed">
+                  <div
+                    className={`border p-3 ${
+                      selectedNode.flooding
+                        ? "bg-red-50 border-red-200"
+                        : "bg-green-50 border-green-200"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      {selectedNode.flooding ? (
+                        <ArrowUp
+                          size={14}
+                          className="text-red-600"
+                        />
+                      ) : (
+                        <ArrowDown
+                          size={14}
+                          className="text-green-600"
+                        />
+                      )}
+
+                      <span
+                        className={`text-xs font-semibold ${
+                          selectedNode.flooding
+                            ? "text-red-800"
+                            : "text-green-800"
+                        }`}
+                      >
+                        {selectedNode.flooding
+                          ? "Flooding detected"
+                          : "No flooding detected"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Asset condition */}
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-wide text-warm-400 mb-2">
+                    Asset condition
+                  </div>
+
+                  <div className="border border-warm-200 bg-warm-50 p-3">
+                    <div className="text-xs font-medium text-warm-800">
                       {
-                        selectedNode.predictedImpact
+                        selectedNode.condition
                       }
                     </div>
                   </div>
                 </div>
 
-                {/* Connections */}
+                {/* Location */}
                 <div>
                   <div className="text-[10px] font-mono uppercase tracking-wide text-warm-400 mb-2">
-                    Network connections
+                    Location
                   </div>
 
-                  <div className="space-y-1">
-                    {data.drainageEdges
-                      .filter(
-                        (edge) =>
-                          edge.from ===
-                            selectedNode.id ||
-                          edge.to ===
-                            selectedNode.id
-                      )
-                      .map(
-                        (edge, i) => {
-                          const isUpstream =
-                            edge.to ===
-                            selectedNode.id;
+                  <div className="flex items-start gap-2 text-xs text-warm-600">
+                    <MapPin
+                      size={13}
+                      className="text-warm-400 mt-0.5"
+                    />
 
-                          const peerId =
-                            isUpstream
-                              ? edge.from
-                              : edge.to;
-
-                          const peer =
-                            data.drainageNodes.find(
-                              (n) =>
-                                n.id ===
-                                peerId
-                            );
-
-                          return (
-                            <button
-                              key={i}
-                              onClick={() =>
-                                dispatch({
-                                  type: "SELECT_DRAINAGE_NODE",
-                                  id: peerId,
-                                })
-                              }
-                              className="w-full flex items-center justify-between px-2 py-2 text-xs text-warm-600 hover:bg-warm-50 transition-colors"
-                            >
-                              <span className="flex items-center gap-1.5">
-                                {isUpstream ? (
-                                  <ArrowUp
-                                    size={11}
-                                  />
-                                ) : (
-                                  <ArrowDown
-                                    size={11}
-                                  />
-                                )}
-
-                                <span className="text-[9px] font-mono text-warm-400">
-                                  {isUpstream
-                                    ? "UPSTREAM"
-                                    : "DOWNSTREAM"}
-                                </span>
-                              </span>
-
-                              <span className="flex items-center gap-1.5">
-                                <span
-                                  className="w-2 h-2 rounded-full"
-                                  style={{
-                                    backgroundColor:
-                                      peer
-                                        ? nodeColors[
-                                            peer
-                                              .status
-                                          ]
-                                        : "#ccc",
-                                  }}
-                                />
-
-                                <span className="font-mono">
-                                  {peerId}
-                                </span>
-                              </span>
-                            </button>
-                          );
-                        }
+                    <span className="font-mono">
+                      {selectedNode.latitude.toFixed(
+                        5
                       )}
+                      ,{" "}
+                      {selectedNode.longitude.toFixed(
+                        5
+                      )}
+                    </span>
                   </div>
+                </div>
+
+                {/* SWMM mapping */}
+                {selectedNode.swmmNodeId && (
+                  <div>
+                    <div className="text-[10px] font-mono uppercase tracking-wide text-warm-400 mb-2">
+                      Model mapping
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-warm-500">
+                        SWMM node
+                      </span>
+
+                      <span className="font-mono font-medium text-warm-800">
+                        {
+                          selectedNode.swmmNodeId
+                        }
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Honest API limitation */}
+                <div className="border-t border-warm-100 pt-3">
+                  <p className="text-[10px] text-warm-400 leading-relaxed">
+                    Flow rate, design capacity,
+                    drainage utilization and pipe
+                    connectivity are not returned by the
+                    current backend API, so they are not
+                    displayed as fabricated values.
+                  </p>
                 </div>
               </div>
             </div>
@@ -1008,16 +1096,13 @@ export default function DrainageScreen() {
               />
 
               <p className="text-sm leading-relaxed">
-                Select a node on the network diagram
-                to inspect capacity, flow,
-                downstream conditions and
-                predicted impact.
+                Select a drainage asset to inspect its backend model output.
               </p>
             </div>
           )}
 
-          {/* Most stressed node */}
-          {mostStressedNode && (
+          {/* Highest depth */}
+          {highestDepthNode && (
             <div className="mt-4 bg-white border border-warm-200 p-4">
               <div className="flex items-center gap-2 mb-3">
                 <AlertTriangle
@@ -1026,7 +1111,7 @@ export default function DrainageScreen() {
                 />
 
                 <div className="text-[10px] font-mono uppercase tracking-wide text-warm-500">
-                  Highest stress
+                  Highest simulated depth
                 </div>
               </div>
 
@@ -1034,33 +1119,29 @@ export default function DrainageScreen() {
                 onClick={() =>
                   dispatch({
                     type: "SELECT_DRAINAGE_NODE",
-                    id: mostStressedNode.id,
+                    id: highestDepthNode.id,
                   })
                 }
                 className="w-full text-left"
               >
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-sm font-bold text-warm-900">
-                    {mostStressedNode.id}
+                    {
+                      highestDepthNode.id
+                    }
                   </span>
 
-                  <span
-                    className="font-mono text-sm font-bold"
-                    style={{
-                      color:
-                        nodeColors[
-                          mostStressedNode.status
-                        ],
-                    }}
-                  >
-                    {mostStressedNode.capacity}%
+                  <span className="font-mono text-sm font-bold text-warm-800">
+                    {formatDepth(
+                      highestDepthNode.maxDepthM
+                    )}
                   </span>
                 </div>
 
                 <div className="text-xs text-warm-500 mt-1">
-                  {mostStressedNode.label
-                    .split("•")[1]
-                    ?.trim()}
+                  {
+                    highestDepthNode.name
+                  }
                 </div>
               </button>
             </div>
@@ -1075,7 +1156,7 @@ export default function DrainageScreen() {
             </div>
 
             <div className="divide-y divide-warm-50 max-h-72 overflow-y-auto">
-              {data.drainageNodes.map(
+              {nodes.map(
                 (node) => (
                   <button
                     key={node.id}
@@ -1109,14 +1190,14 @@ export default function DrainageScreen() {
 
                       <div>
                         <div className="text-xs font-mono font-medium text-warm-800">
-                          {node.id}
+                          {
+                            node.id
+                          }
                         </div>
 
                         <div className="text-[10px] text-warm-400">
                           {
-                            node.label.split(
-                              "•"
-                            )[1]
+                            node.name
                           }
                         </div>
                       </div>
@@ -1124,7 +1205,9 @@ export default function DrainageScreen() {
 
                     <div className="text-right">
                       <div className="font-mono text-xs font-medium text-warm-700">
-                        {node.capacity}%
+                        {formatDepth(
+                          node.maxDepthM
+                        )}
                       </div>
 
                       <div
@@ -1136,7 +1219,9 @@ export default function DrainageScreen() {
                             ],
                         }}
                       >
-                        {node.status}
+                        {
+                          node.status
+                        }
                       </div>
                     </div>
                   </button>
@@ -1144,6 +1229,26 @@ export default function DrainageScreen() {
               )}
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Prototype note */}
+      <div className="border border-warm-200 bg-warm-50 px-4 py-3 mt-6">
+        <div className="flex items-start gap-2">
+          <AlertCircle
+            size={14}
+            className="text-warm-500 mt-0.5 shrink-0"
+          />
+
+          <p className="text-[11px] text-warm-500 leading-relaxed">
+            The current backend drainage assets are
+            demonstration model assets mapped to the
+            prototype SWMM network. They are not surveyed
+            municipal drainage infrastructure. Detailed
+            capacity, flow and pipe connectivity will be
+            added when those backend model outputs become
+            available.
+          </p>
         </div>
       </div>
     </div>
