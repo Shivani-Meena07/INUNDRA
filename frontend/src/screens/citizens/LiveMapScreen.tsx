@@ -8,10 +8,10 @@ import {
   X,
   AlertTriangle,
 } from "lucide-react";
-import { useApp } from "../state/AppContext";
-import { cityData } from "../data/mockData";
-import StatusBadge from "../components/ui/StatusBadge";
-import MapView from "../components/map/MapView";
+import { useApp } from "../../state/AppContext";
+import { cityData } from "../../data/mockData";
+import StatusBadge from "../../components/ui/StatusBadge";
+import MapView from "../../components/map/MapView";
 
 const LAYERS = [
   { key: "floodRisk", label: "Flood Risk" },

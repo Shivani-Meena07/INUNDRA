@@ -1,6 +1,6 @@
-import { useApp } from "../state/AppContext";
-import { cityData, RiskLevel } from "../data/mockData";
-import StatusBadge from "../components/ui/StatusBadge";
+import { useApp } from "../../state/AppContext";
+import { cityData, RiskLevel } from "../../data/mockData";
+import StatusBadge from "../../components/ui/StatusBadge";
 import {
   CloudRain,
   Waves,

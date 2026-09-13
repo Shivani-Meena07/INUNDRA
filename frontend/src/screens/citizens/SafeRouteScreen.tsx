@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { Navigation, AlertTriangle, CheckCircle, Clock, Droplets, MapPin } from "lucide-react";
-import { useApp } from "../state/AppContext";
-import { cityData, RiskLevel } from "../data/mockData";
-import StatusBadge from "../components/ui/StatusBadge";
+import { useApp } from "../../state/AppContext";
+import { cityData, RiskLevel } from "../../data/mockData";
+import StatusBadge from "../../components/ui/StatusBadge";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 const riskColor: Record<RiskLevel, string> = {
@@ -317,7 +317,7 @@ export default function SafeRouteScreen() {
                 <button
                   key={route.id}
                   onClick={() => dispatch({ type: "SELECT_ROUTE", id: isSelected ? null : route.id })}
-                  className={`w-full text-left p-4 border rounded-[4px] transition-all ${
+                  className={`w-full text-left p-4 border rounded-sm transition-all ${
                     isSelected
                       ? "border-maroon-300 bg-maroon-50 shadow-sm"
                       : "border-warm-200 bg-white hover:border-warm-300 hover:bg-warm-50/40"
@@ -327,7 +327,7 @@ export default function SafeRouteScreen() {
                     <div className="flex items-center gap-2">
                       <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: routePathColors[i] }} />
                       <span className="text-sm font-bold text-warm-900">{route.label}</span>
-                      <span className="text-xs text-warm-500 bg-warm-100 px-1.5 py-0.5 rounded-[2px]">{route.tag}</span>
+                      <span className="text-xs text-warm-500 bg-warm-100 px-1.5 py-0.5 rounded-xs">{route.tag}</span>
                     </div>
                     {route.recommended && (
                       <div className="flex items-center gap-1 text-green-700 text-[11px] font-medium">

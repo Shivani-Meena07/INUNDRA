@@ -1,9 +1,9 @@
-import { useApp } from "../state/AppContext";
+import { useApp } from "../../state/AppContext";
 import {
   cityData,
   DrainageNodeStatus,
-} from "../data/mockData";
-import StatusBadge from "../components/ui/StatusBadge";
+} from "../../data/mockData";
+import StatusBadge from "../../components/ui/StatusBadge";
 import {
   X,
   Activity,
