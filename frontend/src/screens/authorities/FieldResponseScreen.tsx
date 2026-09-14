@@ -1,16 +1,25 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
-  CheckCircle,
-  Clock,
+  CheckCircle2,
+  Clock3,
   MapPin,
-  UserRound,
   Radio,
-  ShieldAlert,
+  RefreshCw,
+  ShieldCheck,
+  Truck,
+  Users,
+  Waves,
 } from "lucide-react";
 
 import { useApp } from "../../state/AppContext";
-import { cityData, RiskLevel } from "../../data/mockData";
+import { cityData } from "../../data/mockData";
+import {
+  CitizenReport,
+  getCitizenReports,
+  updateCitizenReportStatus,
+  verifyCitizenReport,
+} from "../../data/api";
 
 type ResponseStatus =
   | "Awaiting dispatch"
@@ -23,184 +32,104 @@ type Priority = "CRITICAL" | "HIGH" | "MODERATE";
 
 interface ResponseItem {
   id: string;
+  reportId?: number;
   location: string;
   zone: string;
   priority: Priority;
   cause: string;
-  predictedDepth: number;
-  onset: number;
+  predictedDepth?: number;
+  onset?: number;
   team: string;
   status: ResponseStatus;
   source: "Model forecast" | "Citizen report";
+  modelRelevant?: boolean;
 }
 
-const riskStyles: Record<
-  RiskLevel,
-  {
-    text: string;
-    bg: string;
-    border: string;
-    dot: string;
-  }
-> = {
-  CRITICAL: {
-    text: "text-red-800",
-    bg: "bg-red-50",
-    border: "border-red-200",
-    dot: "bg-red-700",
-  },
-  HIGH: {
-    text: "text-red-700",
-    bg: "bg-red-50",
-    border: "border-red-200",
-    dot: "bg-red-600",
-  },
-  MODERATE: {
-    text: "text-amber-700",
-    bg: "bg-amber-50",
-    border: "border-amber-200",
-    dot: "bg-amber-500",
-  },
-  LOW: {
-    text: "text-lime-700",
-    bg: "bg-lime-50",
-    border: "border-lime-200",
-    dot: "bg-lime-600",
-  },
-  SAFE: {
-    text: "text-green-700",
-    bg: "bg-green-50",
-    border: "border-green-200",
-    dot: "bg-green-600",
-  },
+const priorityStyles: Record<Priority, string> = {
+  CRITICAL: "bg-red-100 text-red-800 border-red-200",
+  HIGH: "bg-orange-100 text-orange-800 border-orange-200",
+  MODERATE: "bg-yellow-100 text-yellow-800 border-yellow-200",
 };
 
-const priorityStyles: Record<
-  Priority,
-  {
-    text: string;
-    bg: string;
-    border: string;
-    dot: string;
-  }
-> = {
-  CRITICAL: {
-    text: "text-red-800",
-    bg: "bg-red-50",
-    border: "border-red-200",
-    dot: "bg-red-700",
-  },
-  HIGH: {
-    text: "text-red-700",
-    bg: "bg-red-50",
-    border: "border-red-200",
-    dot: "bg-red-600",
-  },
-  MODERATE: {
-    text: "text-amber-700",
-    bg: "bg-amber-50",
-    border: "border-amber-200",
-    dot: "bg-amber-500",
-  },
+const statusStyles: Record<ResponseStatus, string> = {
+  "Awaiting dispatch": "bg-gray-100 text-gray-700",
+  "Team assigned": "bg-blue-100 text-blue-800",
+  "En route": "bg-orange-100 text-orange-800",
+  "On site": "bg-purple-100 text-purple-800",
+  Resolved: "bg-green-100 text-green-800",
 };
 
-function MetricCard({
-  label,
-  value,
-  detail,
-  alert = false,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  alert?: boolean;
-}) {
-  return (
-    <div
-      className={`rounded-xl border bg-white p-5 ${
-        alert ? "border-red-200" : "border-stone-200"
-      }`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-stone-500">
-          {label}
-        </p>
-
-        {alert && (
-          <span className="h-2.5 w-2.5 rounded-full bg-red-600" />
-        )}
-      </div>
-
-      <div className="mt-3 text-2xl font-bold tracking-tight text-stone-900">
-        {value}
-      </div>
-
-      <p className="mt-1 text-xs text-stone-500">{detail}</p>
-    </div>
-  );
+function normalizePriority(severity?: string): Priority {
+  switch ((severity ?? "").toUpperCase()) {
+    case "CRITICAL":
+      return "CRITICAL";
+    case "HIGH":
+      return "HIGH";
+    default:
+      return "MODERATE";
+  }
 }
 
-function SectionHeader({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="mb-4">
-      <h2 className="text-base font-bold text-stone-900">
-        {title}
-      </h2>
+function getModelResponseItems(city: any): ResponseItem[] {
+  if (!city?.hotspots) return [];
 
-      <p className="mt-1 text-xs text-stone-500">
-        {description}
-      </p>
-    </div>
-  );
-}
-
-function getInitialResponseItems(
-  city: typeof cityData[keyof typeof cityData],
-): ResponseItem[] {
   return city.hotspots
-    .filter(
-      (hotspot) =>
-        hotspot.risk === "CRITICAL" ||
-        hotspot.risk === "HIGH" ||
-        hotspot.risk === "MODERATE",
+    .filter((hotspot: any) =>
+      ["CRITICAL", "HIGH", "MODERATE"].includes(
+        String(hotspot.risk ?? "").toUpperCase()
+      )
     )
-    .slice(0, 6)
-    .map((hotspot, index) => ({
-      id: `response-${hotspot.id}`,
-      location: hotspot.label,
-      zone: hotspot.zone,
-      priority:
-        hotspot.risk === "CRITICAL"
-          ? "CRITICAL"
-          : hotspot.risk === "HIGH"
-            ? "HIGH"
-            : "MODERATE",
-      cause: hotspot.cause,
-      predictedDepth: hotspot.depthMax,
-      onset: hotspot.onset,
-      team:
-        index === 0
-          ? "Rapid Response Team A"
-          : index === 1
-            ? "Drainage Team B"
-            : "Unassigned",
-      status:
-        index === 0
-          ? "Team assigned"
-          : index === 1
-            ? "En route"
-            : "Awaiting dispatch",
-      source:
-        index % 2 === 0
-          ? "Model forecast"
-          : "Citizen report",
+    .map((hotspot: any, index: number) => ({
+      id: `model-${index}-${hotspot.id ?? hotspot.name ?? "hotspot"}`,
+      location: hotspot.name ?? hotspot.location ?? "Priority flood location",
+      zone: hotspot.zone ?? "Model forecast zone",
+      priority: normalizePriority(hotspot.risk),
+      cause:
+        hotspot.cause ??
+        hotspot.reason ??
+        "Forecast rainfall and drainage stress",
+      predictedDepth:
+        typeof hotspot.predictedDepth === "number"
+          ? hotspot.predictedDepth
+          : undefined,
+      onset:
+        typeof hotspot.onset === "number" ? hotspot.onset : undefined,
+      team: hotspot.assignedTeam ?? "Unassigned",
+      status: hotspot.status ?? "Awaiting dispatch",
+      source: "Model forecast",
     }));
+}
+
+function mapCitizenReport(
+  report: CitizenReport,
+  localStatus?: ResponseStatus
+): ResponseItem {
+  let status: ResponseStatus;
+
+  if (localStatus) {
+    status = localStatus;
+  } else if (report.status.toLowerCase() === "resolved") {
+    status = "Resolved";
+  } else if (report.assigned_team) {
+    status = "Team assigned";
+  } else {
+    status = "Awaiting dispatch";
+  }
+
+  return {
+    id: `report-${report.id}`,
+    reportId: report.id,
+    location: report.location,
+    zone: "Citizen-reported location",
+    priority: normalizePriority(report.severity),
+    cause:
+      report.description?.trim() ||
+      `${report.issue_type} reported by citizen`,
+    team: report.assigned_team || "Unassigned",
+    status,
+    source: "Citizen report",
+    modelRelevant: report.model_relevant,
+  };
 }
 
 export default function FieldResponseScreen() {
@@ -208,821 +137,640 @@ export default function FieldResponseScreen() {
 
   const city = cityData[state.city];
 
-  const [items, setItems] = useState<ResponseItem[]>(() =>
-    getInitialResponseItems(city),
+  const [citizenReports, setCitizenReports] = useState<CitizenReport[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [localStatuses, setLocalStatuses] = useState<
+    Record<number, ResponseStatus>
+  >({});
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadReports(showRefresh = false) {
+    try {
+      if (showRefresh) setRefreshing(true);
+      else setLoading(true);
+
+      setError(null);
+
+      const reports = await getCitizenReports();
+
+      setCitizenReports(reports);
+    } catch (err) {
+      console.error("Failed to load citizen reports:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load citizen reports."
+      );
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    loadReports();
+
+    const interval = window.setInterval(() => {
+      loadReports();
+    }, 30000);
+
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const modelItems = useMemo(
+    () => getModelResponseItems(city),
+    [city]
   );
 
-  const [filter, setFilter] = useState<
-    "All" | "CRITICAL" | "HIGH" | "MODERATE"
-  >("All");
+  const citizenItems = useMemo(() => {
+    return citizenReports
+      .filter((report) => {
+        const status = report.status.toLowerCase();
 
-  const [selectedId, setSelectedId] = useState<string | null>(
-    items[0]?.id ?? null,
+        return (
+          status === "confirmed" ||
+          status === "assigned" ||
+          status === "resolved" ||
+          Boolean(report.assigned_team)
+        );
+      })
+      .map((report) =>
+        mapCitizenReport(report, localStatuses[report.id])
+      );
+  }, [citizenReports, localStatuses]);
+
+  const responseItems = useMemo(
+    () => [...modelItems, ...citizenItems],
+    [modelItems, citizenItems]
   );
 
-  const selectedItem = useMemo(
-    () =>
-      items.find((item) => item.id === selectedId) ??
-      null,
-    [items, selectedId],
-  );
-
-  const filteredItems = useMemo(() => {
-    if (filter === "All") {
-      return items;
+  useEffect(() => {
+    if (!selectedId && responseItems.length > 0) {
+      setSelectedId(responseItems[0].id);
     }
 
-    return items.filter(
-      (item) => item.priority === filter,
-    );
-  }, [items, filter]);
+    if (
+      selectedId &&
+      responseItems.length > 0 &&
+      !responseItems.some((item) => item.id === selectedId)
+    ) {
+      setSelectedId(responseItems[0].id);
+    }
+  }, [responseItems, selectedId]);
 
-  const criticalItems = items.filter(
-    (item) => item.priority === "CRITICAL",
+  const selectedItem = responseItems.find(
+    (item) => item.id === selectedId
   );
 
-  const activeItems = items.filter(
-    (item) =>
-      item.status !== "Resolved",
+  const criticalItems = responseItems.filter(
+    (item) => item.priority === "CRITICAL"
   );
 
-  const teamsDeployed = items.filter(
+  const activeItems = responseItems.filter(
     (item) =>
+      item.status === "Team assigned" ||
       item.status === "En route" ||
-      item.status === "On site",
+      item.status === "On site"
+  );
+
+  const teamsDeployed = responseItems.filter(
+    (item) =>
+      item.status === "En route" || item.status === "On site"
   ).length;
 
-  const handleDispatch = (id: string) => {
-    setItems((current) =>
-      current.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              status: "En route",
-              team:
-                item.team === "Unassigned"
-                  ? "Rapid Response Team"
-                  : item.team,
-            }
-          : item,
-      ),
-    );
-  };
+  function setLocalStatus(id: string, status: ResponseStatus) {
+    const item = responseItems.find((entry) => entry.id === id);
 
-  const handleAssign = (id: string) => {
-    setItems((current) =>
-      current.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              status: "Team assigned",
-              team:
-                item.team === "Unassigned"
-                  ? "Rapid Response Team"
-                  : item.team,
-            }
-          : item,
-      ),
-    );
-  };
+    if (!item?.reportId) return;
 
-  const handleOnSite = (id: string) => {
-    setItems((current) =>
-      current.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              status: "On site",
-            }
-          : item,
-      ),
-    );
-  };
+    setLocalStatuses((current) => ({
+      ...current,
+      [item.reportId!]: status,
+    }));
+  }
 
-  const handleResolve = (id: string) => {
-    setItems((current) =>
-      current.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              status: "Resolved",
-            }
-          : item,
-      ),
-    );
-  };
+  async function handleAssign(item: ResponseItem) {
+    if (!item.reportId) {
+      setLocalStatus(item.id, "Team assigned");
+      return;
+    }
 
-  const statusLabel = (status: ResponseStatus) => {
-    switch (status) {
+    try {
+      setError(null);
+
+      const report = citizenReports.find(
+        (entry) => entry.id === item.reportId
+      );
+
+      await verifyCitizenReport(item.reportId, {
+        verified: true,
+        model_relevant: report?.model_relevant ?? false,
+        assigned_team:
+          item.team !== "Unassigned"
+            ? item.team
+            : "Rapid Response Team",
+      });
+
+      await updateCitizenReportStatus(item.reportId, "Assigned");
+
+      await loadReports(true);
+    } catch (err) {
+      console.error("Failed to assign response team:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to assign response team."
+      );
+    }
+  }
+
+  function handleDispatch(item: ResponseItem) {
+    if (item.reportId) {
+      setLocalStatus(item.id, "En route");
+      return;
+    }
+
+    setLocalStatus(item.id, "En route");
+  }
+
+  function handleOnSite(item: ResponseItem) {
+    if (item.reportId) {
+      setLocalStatus(item.id, "On site");
+      return;
+    }
+
+    setLocalStatus(item.id, "On site");
+  }
+
+  async function handleResolve(item: ResponseItem) {
+    if (!item.reportId) {
+      setLocalStatus(item.id, "Resolved");
+      return;
+    }
+
+    try {
+      setError(null);
+
+      await updateCitizenReportStatus(item.reportId, "Resolved");
+
+      setLocalStatuses((current) => {
+        const next = { ...current };
+        delete next[item.reportId!];
+        return next;
+      });
+
+      await loadReports(true);
+    } catch (err) {
+      console.error("Failed to resolve report:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to resolve citizen report."
+      );
+    }
+  }
+
+  function renderActionButton(item: ResponseItem) {
+    switch (item.status) {
       case "Awaiting dispatch":
-        return "Awaiting dispatch";
+        return (
+          <button
+            onClick={() => handleAssign(item)}
+            className="flex items-center gap-2 rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-800"
+          >
+            <Users className="h-4 w-4" />
+            Assign Response Team
+          </button>
+        );
 
       case "Team assigned":
-        return "Team assigned";
+        return (
+          <button
+            onClick={() => handleDispatch(item)}
+            className="flex items-center gap-2 rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-800"
+          >
+            <Truck className="h-4 w-4" />
+            Dispatch Team
+          </button>
+        );
 
       case "En route":
-        return "En route";
+        return (
+          <button
+            onClick={() => handleOnSite(item)}
+            className="flex items-center gap-2 rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-800"
+          >
+            <MapPin className="h-4 w-4" />
+            Mark On Site
+          </button>
+        );
 
       case "On site":
-        return "On site";
+        return (
+          <button
+            onClick={() => handleResolve(item)}
+            className="flex items-center gap-2 rounded-lg bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-800"
+          >
+            <CheckCircle2 className="h-4 w-4" />
+            Mark Resolved
+          </button>
+        );
 
       case "Resolved":
-        return "Resolved";
-
-      default:
-        return status;
+        return (
+          <div className="flex items-center gap-2 text-sm font-medium text-green-700">
+            <CheckCircle2 className="h-4 w-4" />
+            Incident resolved
+          </div>
+        );
     }
-  };
+  }
 
   return (
-    <main className="mx-auto max-w-360 px-4 py-6 sm:px-6 lg:px-8">
-
-      {/* =====================================================
-          PAGE HEADER
-          ===================================================== */}
-
-      <section className="mb-6">
-        <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
-
+    <div className="min-h-screen bg-[#f7f5f1] px-4 py-6 md:px-8">
+      <div className="mx-auto max-w-7xl">
+        {/* Header */}
+        <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-red-700">
-              Emergency operations
-            </p>
+            <div className="mb-1 flex items-center gap-2">
+              <Radio className="h-5 w-5 text-[#8f1d2c]" />
+              <span className="text-xs font-semibold uppercase tracking-[0.18em] text-[#8f1d2c]">
+                Authority Operations
+              </span>
+            </div>
 
-            <h1 className="mt-1 text-2xl font-bold tracking-tight text-stone-900 sm:text-3xl">
+            <h1 className="text-2xl font-bold tracking-tight text-gray-900">
               Field Response
             </h1>
 
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-stone-600">
-              Prioritize flood locations, assign response teams and
-              track operational action from forecast to field response.
+            <p className="mt-1 max-w-2xl text-sm text-gray-600">
+              Detect → Prioritize → Assign → Dispatch → Verify → Resolve
             </p>
           </div>
 
-          <div className="rounded-lg border border-stone-200 bg-white px-4 py-3">
-            <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">
-              Response status
-            </div>
-
-            <div className="mt-1 flex items-center gap-2">
-              <span
-                className={`h-2.5 w-2.5 rounded-full ${
-                  criticalItems.length > 0
-                    ? "bg-red-600"
-                    : "bg-green-600"
-                }`}
-              />
-
-              <span className="text-sm font-semibold text-stone-800">
-                {criticalItems.length > 0
-                  ? "Priority response required"
-                  : "No critical response pending"}
-              </span>
-            </div>
-          </div>
-
-        </div>
-      </section>
-
-      {/* =====================================================
-          RESPONSE METRICS
-          ===================================================== */}
-
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-
-        <MetricCard
-          label="Active priorities"
-          value={String(activeItems.length)}
-          detail="Locations requiring action"
-          alert={activeItems.length > 0}
-        />
-
-        <MetricCard
-          label="Critical"
-          value={String(criticalItems.length)}
-          detail="Immediate field attention"
-          alert={criticalItems.length > 0}
-        />
-
-        <MetricCard
-          label="Teams deployed"
-          value={String(teamsDeployed)}
-          detail="Currently en route / on site"
-        />
-
-        <MetricCard
-          label="Awaiting dispatch"
-          value={String(
-            items.filter(
-              (item) =>
-                item.status === "Awaiting dispatch",
-            ).length,
-          )}
-          detail="No field team assigned"
-        />
-
-        <MetricCard
-          label="Resolved"
-          value={String(
-            items.filter(
-              (item) => item.status === "Resolved",
-            ).length,
-          )}
-          detail="Closed response items"
-        />
-
-      </section>
-
-      {/* =====================================================
-          CRITICAL RESPONSE ALERT
-          ===================================================== */}
-
-      {criticalItems.length > 0 && (
-        <section className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4">
-
-          <div className="flex items-start gap-3">
-
-            <ShieldAlert
-              size={18}
-              className="mt-0.5 shrink-0 text-red-700"
+          <button
+            onClick={() => loadReports(true)}
+            disabled={refreshing}
+            className="flex w-fit items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+          >
+            <RefreshCw
+              className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`}
             />
+            Refresh
+          </button>
+        </div>
 
+        {/* Backend state */}
+        {error && (
+          <div className="mb-5 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <div>
-              <div className="text-sm font-bold text-red-900">
-                Critical field response required
-              </div>
-
-              <p className="mt-1 text-sm leading-6 text-red-800">
-                {criticalItems.length} critical location
-                {criticalItems.length === 1 ? "" : "s"} currently
-                require immediate operational attention.
-              </p>
+              <p className="font-semibold">Backend connection issue</p>
+              <p className="mt-0.5">{error}</p>
             </div>
-
           </div>
-        </section>
-      )}
+        )}
 
-      {/* =====================================================
-          FILTER
-          ===================================================== */}
+        {/* Metrics */}
+        <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className="border border-gray-200 bg-white p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                Priority locations
+              </span>
+              <AlertTriangle className="h-4 w-4 text-red-600" />
+            </div>
+            <div className="text-2xl font-bold text-gray-900">
+              {responseItems.length}
+            </div>
+          </div>
 
-      <section className="mt-6 rounded-xl border border-stone-200 bg-white p-5">
+          <div className="border border-gray-200 bg-white p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                Critical
+              </span>
+              <Waves className="h-4 w-4 text-red-600" />
+            </div>
+            <div className="text-2xl font-bold text-gray-900">
+              {criticalItems.length}
+            </div>
+          </div>
 
-        <div className="mb-4">
-          <h2 className="text-base font-bold text-stone-900">
-            Response queue
-          </h2>
+          <div className="border border-gray-200 bg-white p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                Active responses
+              </span>
+              <Truck className="h-4 w-4 text-orange-600" />
+            </div>
+            <div className="text-2xl font-bold text-gray-900">
+              {activeItems.length}
+            </div>
+          </div>
 
-          <p className="mt-1 text-xs text-stone-500">
-            Prioritized locations generated from the current
-            prototype flood intelligence.
-          </p>
+          <div className="border border-gray-200 bg-white p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                Teams deployed
+              </span>
+              <Users className="h-4 w-4 text-blue-600" />
+            </div>
+            <div className="text-2xl font-bold text-gray-900">
+              {teamsDeployed}
+            </div>
+          </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-
-          {(
-            [
-              "All",
-              "CRITICAL",
-              "HIGH",
-              "MODERATE",
-            ] as const
-          ).map((item) => {
-
-            const active = filter === item;
-
-            const count =
-              item === "All"
-                ? items.length
-                : items.filter(
-                    (response) =>
-                      response.priority === item,
-                  ).length;
-
-            return (
-              <button
-                key={item}
-                type="button"
-                onClick={() => setFilter(item)}
-                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition ${
-                  active
-                    ? "border-red-800 bg-red-50 text-red-800"
-                    : "border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:bg-stone-50"
-                }`}
-              >
-                {item}
-
-                <span className="rounded bg-stone-100 px-1.5 py-0.5 text-[10px]">
-                  {count}
-                </span>
-              </button>
-            );
-          })}
-
-        </div>
-
-      </section>
-
-      {/* =====================================================
-          MAIN RESPONSE GRID
-          ===================================================== */}
-
-      <section className="mt-6 grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
-
-        {/* ===================================================
-            RESPONSE LIST
-            =================================================== */}
-
-        <div className="rounded-xl border border-stone-200 bg-white p-5">
-
-          <SectionHeader
-            title="Priority locations"
-            description="Locations ranked for field inspection or emergency response."
-          />
-
-          <div className="space-y-3">
-
-            {filteredItems.map((item) => {
-
-              const priority =
-                priorityStyles[item.priority];
-
-              const selected =
-                selectedId === item.id;
-
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() =>
-                    setSelectedId(item.id)
-                  }
-                  className={`w-full rounded-lg border p-4 text-left transition ${
-                    selected
-                      ? "border-red-300 bg-red-50/40"
-                      : "border-stone-200 bg-white hover:border-stone-300 hover:bg-stone-50"
-                  }`}
-                >
-
-                  <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
-
-                    <div className="min-w-0">
-
-                      <div className="flex items-center gap-2">
-
-                        <span
-                          className={`h-2.5 w-2.5 shrink-0 rounded-full ${priority.dot}`}
-                        />
-
-                        <span className="truncate text-sm font-bold text-stone-900">
-                          {item.location}
-                        </span>
-
-                      </div>
-
-                      <div className="mt-1 flex items-center gap-1.5 text-xs text-stone-500">
-                        <MapPin size={11} />
-                        {item.zone}
-                      </div>
-
-                    </div>
-
-                    <div className="flex items-center gap-2">
-
-                      <span
-                        className={`rounded-md border px-2 py-1 text-[10px] font-bold ${priority.bg} ${priority.text} ${priority.border}`}
-                      >
-                        {item.priority}
-                      </span>
-
-                      <span className="rounded-md bg-stone-100 px-2 py-1 text-[10px] font-semibold text-stone-600">
-                        {statusLabel(item.status)}
-                      </span>
-
-                    </div>
-
-                  </div>
-
-                  <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wide text-stone-400">
-                        Depth
-                      </div>
-
-                      <div className="mt-1 text-sm font-bold text-stone-800">
-                        {item.predictedDepth} cm
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wide text-stone-400">
-                        Onset
-                      </div>
-
-                      <div className="mt-1 flex items-center gap-1 text-sm font-bold text-stone-800">
-                        <Clock size={12} />
-                        {item.onset} min
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wide text-stone-400">
-                        Team
-                      </div>
-
-                      <div className="mt-1 truncate text-sm font-semibold text-stone-800">
-                        {item.team}
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wide text-stone-400">
-                        Source
-                      </div>
-
-                      <div className="mt-1 text-xs font-semibold text-stone-700">
-                        {item.source}
-                      </div>
-                    </div>
-
-                  </div>
-
-                </button>
-              );
-            })}
-
-            {filteredItems.length === 0 && (
-              <div className="rounded-lg border border-stone-200 bg-stone-50 p-5 text-sm text-stone-600">
-                No response locations match the selected priority.
+        {/* Loading */}
+        {loading ? (
+          <div className="border border-gray-200 bg-white p-10 text-center">
+            <RefreshCw className="mx-auto mb-3 h-6 w-6 animate-spin text-gray-500" />
+            <p className="text-sm text-gray-600">
+              Loading field response queue…
+            </p>
+          </div>
+        ) : responseItems.length === 0 ? (
+          <div className="border border-gray-200 bg-white p-10 text-center">
+            <ShieldCheck className="mx-auto mb-3 h-8 w-8 text-green-600" />
+            <h2 className="font-semibold text-gray-900">
+              No locations requiring field response
+            </h2>
+            <p className="mt-1 text-sm text-gray-500">
+              Verified citizen reports and model priority locations will appear
+              here.
+            </p>
+          </div>
+        ) : (
+          <div className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
+            {/* Queue */}
+            <section className="border border-gray-200 bg-white">
+              <div className="border-b border-gray-200 px-5 py-4">
+                <h2 className="font-semibold text-gray-900">
+                  Response Queue
+                </h2>
+                <p className="mt-1 text-xs text-gray-500">
+                  Model signals and verified citizen reports requiring action.
+                </p>
               </div>
-            )}
 
-          </div>
-        </div>
-
-        {/* ===================================================
-            SELECTED RESPONSE
-            =================================================== */}
-
-        <div className="rounded-xl border border-stone-200 bg-white p-5">
-
-          <SectionHeader
-            title="Response action"
-            description="Operational controls for the selected priority location."
-          />
-
-          {selectedItem ? (
-            <div>
-
-              <div
-                className={`rounded-lg border p-4 ${
-                  priorityStyles[selectedItem.priority].border
-                } ${
-                  priorityStyles[selectedItem.priority].bg
-                }`}
-              >
-
-                <div className="flex items-start justify-between gap-3">
-
-                  <div>
-                    <div className="text-base font-bold text-stone-900">
-                      {selectedItem.location}
-                    </div>
-
-                    <div className="mt-1 flex items-center gap-1.5 text-xs text-stone-600">
-                      <MapPin size={11} />
-                      {selectedItem.zone}
-                    </div>
-                  </div>
-
-                  <span
-                    className={`rounded-md px-2 py-1 text-[10px] font-bold ${
-                      priorityStyles[
-                        selectedItem.priority
-                      ].text
-                    } ${
-                      priorityStyles[
-                        selectedItem.priority
-                      ].bg
+              <div className="divide-y divide-gray-100">
+                {responseItems.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setSelectedId(item.id)}
+                    className={`block w-full p-5 text-left transition hover:bg-gray-50 ${
+                      selectedId === item.id ? "bg-[#faf7f3]" : ""
                     }`}
                   >
-                    {selectedItem.priority}
-                  </span>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="mb-2 flex flex-wrap items-center gap-2">
+                          <span
+                            className={`rounded-full border px-2 py-1 text-[10px] font-bold tracking-wide ${
+                              priorityStyles[item.priority]
+                            }`}
+                          >
+                            {item.priority}
+                          </span>
 
-                </div>
+                          <span
+                            className={`rounded-full px-2 py-1 text-[10px] font-medium ${
+                              statusStyles[item.status]
+                            }`}
+                          >
+                            {item.status}
+                          </span>
+                        </div>
 
-              </div>
+                        <h3 className="truncate text-sm font-semibold text-gray-900">
+                          {item.location}
+                        </h3>
 
-              {/* Situation */}
+                        <p className="mt-1 text-xs text-gray-500">
+                          {item.zone}
+                        </p>
+                      </div>
 
-              <div className="mt-5">
-
-                <div className="text-xs font-bold uppercase tracking-wide text-stone-500">
-                  Situation
-                </div>
-
-                <p className="mt-2 text-sm leading-6 text-stone-700">
-                  {selectedItem.cause}
-                </p>
-
-              </div>
-
-              {/* Metrics */}
-
-              <div className="mt-5 grid grid-cols-2 gap-3">
-
-                <div className="rounded-lg border border-stone-200 bg-stone-50 p-3">
-                  <div className="flex items-center gap-1.5 text-xs text-stone-500">
-                    <span className="text-blue-600">
-                      <MapPin size={12} />
-                    </span>
-                    Predicted depth
-                  </div>
-
-                  <div className="mt-1 text-lg font-bold text-stone-900">
-                    {selectedItem.predictedDepth} cm
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-stone-200 bg-stone-50 p-3">
-                  <div className="flex items-center gap-1.5 text-xs text-stone-500">
-                    <Clock size={12} />
-                    Expected onset
-                  </div>
-
-                  <div className="mt-1 text-lg font-bold text-stone-900">
-                    {selectedItem.onset} min
-                  </div>
-                </div>
-
-              </div>
-
-              {/* Team */}
-
-              <div className="mt-5 rounded-lg border border-stone-200 p-4">
-
-                <div className="flex items-center justify-between gap-3">
-
-                  <div>
-                    <div className="text-xs font-bold uppercase tracking-wide text-stone-500">
-                      Assigned team
+                      {item.source === "Citizen report" ? (
+                        <div className="shrink-0 rounded border border-[#d9b7bd] bg-[#fbf0f2] px-2 py-1 text-[10px] font-semibold text-[#8f1d2c]">
+                          Citizen report
+                        </div>
+                      ) : (
+                        <div className="shrink-0 rounded border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] font-semibold text-gray-600">
+                          Model forecast
+                        </div>
+                      )}
                     </div>
 
-                    <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-stone-800">
-                      <UserRound size={14} />
-                      {selectedItem.team}
+                    <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
+                      <div>
+                        <p className="text-gray-400">Depth / report</p>
+                        <p className="mt-1 font-medium text-gray-800">
+                          {item.predictedDepth != null
+                            ? `${item.predictedDepth} cm`
+                            : "Field report"}
+                        </p>
+                      </div>
+
+                      <div>
+                        <p className="text-gray-400">Onset</p>
+                        <p className="mt-1 font-medium text-gray-800">
+                          {item.onset != null
+                            ? `${item.onset} min`
+                            : "Reported now"}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            {/* Selected incident */}
+            <section className="border border-gray-200 bg-white">
+              {selectedItem ? (
+                <>
+                  <div className="border-b border-gray-200 px-5 py-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-medium uppercase tracking-wide text-gray-400">
+                          Selected response
+                        </p>
+                        <h2 className="mt-1 text-lg font-bold text-gray-900">
+                          {selectedItem.location}
+                        </h2>
+                      </div>
+
+                      <span
+                        className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                          statusStyles[selectedItem.status]
+                        }`}
+                      >
+                        {selectedItem.status}
+                      </span>
                     </div>
                   </div>
 
-                  <div className="text-right">
-                    <div className="text-xs font-bold uppercase tracking-wide text-stone-500">
-                      Status
+                  <div className="space-y-6 p-5">
+                    {/* Source */}
+                    <div className="flex items-start gap-3 border-b border-gray-100 pb-5">
+                      {selectedItem.source === "Citizen report" ? (
+                        <MapPin className="mt-0.5 h-5 w-5 text-[#8f1d2c]" />
+                      ) : (
+                        <Waves className="mt-0.5 h-5 w-5 text-blue-600" />
+                      )}
+
+                      <div>
+                        <p className="text-sm font-semibold text-gray-900">
+                          {selectedItem.source}
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-gray-500">
+                          {selectedItem.cause}
+                        </p>
+                      </div>
                     </div>
 
-                    <div className="mt-1 text-xs font-semibold text-stone-700">
-                      {selectedItem.status}
+                    {/* Details */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="border border-gray-100 bg-gray-50 p-3">
+                        <p className="text-xs text-gray-500">Priority</p>
+                        <p className="mt-1 text-sm font-semibold text-gray-900">
+                          {selectedItem.priority}
+                        </p>
+                      </div>
+
+                      <div className="border border-gray-100 bg-gray-50 p-3">
+                        <p className="text-xs text-gray-500">Response team</p>
+                        <p className="mt-1 text-sm font-semibold text-gray-900">
+                          {selectedItem.team}
+                        </p>
+                      </div>
+
+                      <div className="border border-gray-100 bg-gray-50 p-3">
+                        <p className="text-xs text-gray-500">
+                          Predicted depth
+                        </p>
+                        <p className="mt-1 text-sm font-semibold text-gray-900">
+                          {selectedItem.predictedDepth != null
+                            ? `${selectedItem.predictedDepth} cm`
+                            : "Not available"}
+                        </p>
+                      </div>
+
+                      <div className="border border-gray-100 bg-gray-50 p-3">
+                        <p className="text-xs text-gray-500">
+                          Expected onset
+                        </p>
+                        <p className="mt-1 text-sm font-semibold text-gray-900">
+                          {selectedItem.onset != null
+                            ? `${selectedItem.onset} min`
+                            : "Not available"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Workflow */}
+                    <div>
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Response workflow
+                      </p>
+
+                      <div className="space-y-3">
+                        {[
+                          ["Detect", true],
+                          [
+                            "Prioritize",
+                            selectedItem.priority !== "MODERATE",
+                          ],
+                          [
+                            "Assign",
+                            selectedItem.status !== "Awaiting dispatch",
+                          ],
+                          [
+                            "Dispatch",
+                            ["En route", "On site", "Resolved"].includes(
+                              selectedItem.status
+                            ),
+                          ],
+                          [
+                            "On site",
+                            ["On site", "Resolved"].includes(
+                              selectedItem.status
+                            ),
+                          ],
+                          ["Resolve", selectedItem.status === "Resolved"],
+                        ].map(([label, complete]) => (
+                          <div
+                            key={String(label)}
+                            className="flex items-center gap-3"
+                          >
+                            <div
+                              className={`flex h-7 w-7 items-center justify-center rounded-full ${
+                                complete
+                                  ? "bg-green-100 text-green-700"
+                                  : "bg-gray-100 text-gray-400"
+                              }`}
+                            >
+                              {complete ? (
+                                <CheckCircle2 className="h-4 w-4" />
+                              ) : (
+                                <Clock3 className="h-4 w-4" />
+                              )}
+                            </div>
+
+                            <span
+                              className={`text-sm ${
+                                complete
+                                  ? "font-medium text-gray-900"
+                                  : "text-gray-400"
+                              }`}
+                            >
+                              {label}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Action */}
+                    <div className="border-t border-gray-100 pt-5">
+                      {renderActionButton(selectedItem)}
                     </div>
                   </div>
-
+                </>
+              ) : (
+                <div className="p-8 text-center text-sm text-gray-500">
+                  Select a response location.
                 </div>
+              )}
+            </section>
+          </div>
+        )}
 
-              </div>
+        {/* Prototype note */}
+        <div className="mt-6 border border-gray-200 bg-white px-5 py-4">
+          <div className="flex items-start gap-3">
+            <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#8f1d2c]" />
 
-              {/* Action buttons */}
-
-              <div className="mt-5 space-y-2">
-
-                {selectedItem.status ===
-                  "Awaiting dispatch" && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleAssign(selectedItem.id)
-                    }
-                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-red-900"
-                  >
-                    <UserRound size={15} />
-                    Assign Response Team
-                  </button>
-                )}
-
-                {selectedItem.status ===
-                  "Team assigned" && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleDispatch(selectedItem.id)
-                    }
-                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-red-900"
-                  >
-                    <Radio size={15} />
-                    Dispatch Team
-                  </button>
-                )}
-
-                {selectedItem.status ===
-                  "En route" && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleOnSite(selectedItem.id)
-                    }
-                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-red-900"
-                  >
-                    <MapPin size={15} />
-                    Mark Team On Site
-                  </button>
-                )}
-
-                {selectedItem.status ===
-                  "On site" && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleResolve(selectedItem.id)
-                    }
-                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-green-700 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-800"
-                  >
-                    <CheckCircle size={15} />
-                    Mark Response Resolved
-                  </button>
-                )}
-
-                {selectedItem.status ===
-                  "Resolved" && (
-                  <div className="flex items-center justify-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm font-semibold text-green-800">
-                    <CheckCircle size={15} />
-                    Response resolved
-                  </div>
-                )}
-
-              </div>
-
-              {/* Operational note */}
-
-              <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
-
-                <AlertTriangle
-                  size={14}
-                  className="mt-0.5 shrink-0 text-amber-700"
-                />
-
-                <p className="text-xs leading-5 text-amber-800">
-                  Predicted conditions support prioritization.
-                  Field teams should verify actual road and
-                  drainage conditions before taking operational action.
-                </p>
-
-              </div>
-
-            </div>
-          ) : (
-            <div className="rounded-lg border border-stone-200 bg-stone-50 p-5 text-sm text-stone-600">
-              Select a response location to inspect its
-              operational details.
-            </div>
-          )}
-
-        </div>
-
-      </section>
-
-      {/* =====================================================
-          RESPONSE WORKFLOW
-          ===================================================== */}
-
-      <section className="mt-6 rounded-xl border border-stone-200 bg-white p-5">
-
-        <SectionHeader
-          title="Field response workflow"
-          description="Operational progression from model signal to verified field action."
-        />
-
-        <div className="grid gap-3 md:grid-cols-5">
-
-          {[
-            {
-              title: "Detect",
-              description: "Flood risk identified",
-              icon: <AlertTriangle size={16} />,
-            },
-            {
-              title: "Prioritize",
-              description: "Location ranked",
-              icon: <ShieldAlert size={16} />,
-            },
-            {
-              title: "Assign",
-              description: "Team selected",
-              icon: <UserRound size={16} />,
-            },
-            {
-              title: "Dispatch",
-              description: "Team sent",
-              icon: <Radio size={16} />,
-            },
-            {
-              title: "Verify",
-              description: "Field condition confirmed",
-              icon: <CheckCircle size={16} />,
-            },
-          ].map((step, index) => (
-            <div
-              key={step.title}
-              className="relative rounded-lg border border-stone-200 p-4"
-            >
-
-              <div className="flex items-center gap-2 text-red-800">
-                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-red-50">
-                  {step.icon}
-                </span>
-
-                <span className="text-sm font-bold text-stone-900">
-                  {index + 1}. {step.title}
-                </span>
-              </div>
-
-              <p className="mt-2 text-xs leading-5 text-stone-500">
-                {step.description}
+            <div>
+              <p className="text-sm font-semibold text-gray-900">
+                Operational data status
               </p>
 
+              <p className="mt-1 text-xs leading-5 text-gray-500">
+                Citizen report verification, team assignment and resolution are
+                persisted through the FastAPI backend. Dispatch and on-site
+                states are currently local prototype state and reset on refresh.
+                Model forecast response locations remain demonstration model
+                data until the full operational dispatch integration is added.
+              </p>
             </div>
-          ))}
-
-        </div>
-
-      </section>
-
-      {/* =====================================================
-          IMPORTANT DISTINCTION
-          ===================================================== */}
-
-      <section className="mt-6 grid gap-6 md:grid-cols-2">
-
-        <div className="rounded-xl border border-stone-200 bg-white p-5">
-
-          <div className="flex items-center gap-2">
-            <AlertTriangle
-              size={16}
-              className="text-red-700"
-            />
-
-            <h2 className="text-sm font-bold text-stone-900">
-              Model signal
-            </h2>
           </div>
-
-          <p className="mt-2 text-sm leading-6 text-stone-600">
-            Predicted flood depth, onset and risk are used to
-            prioritize where authorities should consider sending
-            field resources.
-          </p>
-
         </div>
-
-        <div className="rounded-xl border border-stone-200 bg-white p-5">
-
-          <div className="flex items-center gap-2">
-            <CheckCircle
-              size={16}
-              className="text-green-700"
-            />
-
-            <h2 className="text-sm font-bold text-stone-900">
-              Field verification
-            </h2>
-          </div>
-
-          <p className="mt-2 text-sm leading-6 text-stone-600">
-            Actual road, drainage and water conditions should be
-            verified by field teams before an incident is treated
-            as confirmed operational ground truth.
-          </p>
-
-        </div>
-
-      </section>
-
-      {/* =====================================================
-          DISCLAIMER
-          ===================================================== */}
-
-      <div className="mt-6 border-t border-stone-200 pt-5 pb-8">
-
-        <p className="text-xs leading-5 text-stone-400">
-          Prototype field response module. Team assignments,
-          response states and operational actions are local
-          demonstration state. Production deployment will connect
-          this workflow to authenticated authority accounts,
-          dispatch systems, verified incidents, live GIS data and
-          field-team updates.
-        </p>
-
       </div>
-
-    </main>
+    </div>
   );
 }
