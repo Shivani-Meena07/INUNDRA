@@ -4,6 +4,7 @@ import "leaflet/dist/leaflet.css";
 
 import { useApp } from "../../state/AppContext";
 import { cityData, RiskLevel } from "../../data/mockData";
+
 import {
   getDrainageAssets,
   getFloodStatus,
@@ -105,7 +106,8 @@ function prototypeToLatLng(
   city: string
 ): [number, number] {
   const bounds =
-    CITY_BOUNDS[city] || CITY_BOUNDS.delhi;
+    CITY_BOUNDS[city] ||
+    CITY_BOUNDS.delhi;
 
   const southWest = L.latLng(
     bounds[0][0],
@@ -257,14 +259,6 @@ export default function MapView() {
     let cancelled = false;
 
     async function loadBackendData() {
-      /*
-       * The current backend is configured around the
-       * Delhi drainage/SWMM model.
-       *
-       * Mumbai and Chennai remain prototype-only until
-       * their corresponding drainage models are connected.
-       */
-
       if (city !== "delhi") {
         setDrainageAssets([]);
         setFloodStatus(null);
@@ -326,14 +320,6 @@ export default function MapView() {
 
     loadBackendData();
 
-    /*
-     * Refresh every five minutes.
-     *
-     * The current flood endpoint performs a hydraulic
-     * simulation, so a conservative refresh interval
-     * is appropriate for the prototype.
-     */
-
     const interval = window.setInterval(
       loadBackendData,
       5 * 60 * 1000
@@ -363,13 +349,23 @@ export default function MapView() {
       CITY_LOCATIONS.delhi;
 
     const map = L.map(
-      mapContainer.current
+      mapContainer.current,
+      {
+        zoomControl: false,
+        attributionControl: true,
+        preferCanvas: true,
+      }
     ).setView(
       initialLocation.center,
       initialLocation.zoom
     );
 
     mapRef.current = map;
+
+    /*
+     * Keep the Leaflet map itself inside the
+     * React map stacking context.
+     */
 
     /* =====================================================
        OPENSTREETMAP
@@ -396,39 +392,49 @@ export default function MapView() {
     legend.style.position =
       "absolute";
 
-    legend.style.right = "15px";
-    legend.style.bottom = "15px";
-    legend.style.zIndex = "1000";
+    /*
+     * Keep the Leaflet legend in the
+     * upper-right map area without
+     * colliding with the React cards.
+     */
+    legend.style.right = "55px";
+    legend.style.top = "12px";
+
+    legend.style.zIndex = "500";
 
     legend.style.background =
-      "rgba(255,255,255,0.92)";
+      "rgba(255,255,255,0.94)";
 
     legend.style.padding =
-      "10px 12px";
+      "9px 11px";
+
+    legend.style.border =
+      "1px solid #E5E0DA";
 
     legend.style.borderRadius =
-      "8px";
+      "5px";
 
     legend.style.boxShadow =
-      "0 2px 8px rgba(0,0,0,0.18)";
+      "0 2px 8px rgba(0,0,0,0.12)";
 
-    legend.style.fontSize = "12px";
+    legend.style.fontSize = "11px";
     legend.style.lineHeight = "1.5";
-    legend.style.minWidth = "180px";
+    legend.style.minWidth = "170px";
 
     legend.innerHTML = `
       <div style="
         font-weight:700;
-        margin-bottom:8px;
-        color:#1f2937;
+        margin-bottom:7px;
+        color:#2E2A26;
+        font-size:11px;
       ">
         Rainfall Intensity
       </div>
 
       <div style="
-        height:12px;
+        height:9px;
         width:100%;
-        border-radius:6px;
+        border-radius:4px;
         background:linear-gradient(
           to right,
           #84CC16,
@@ -437,14 +443,14 @@ export default function MapView() {
           #DC2626,
           #991B1B
         );
-        margin-bottom:6px;
+        margin-bottom:5px;
       "></div>
 
       <div style="
         display:flex;
         justify-content:space-between;
-        color:#374151;
-        font-size:10px;
+        color:#6B6560;
+        font-size:9px;
       ">
         <span>Low</span>
         <span>Moderate</span>
@@ -457,7 +463,29 @@ export default function MapView() {
       .getContainer()
       .appendChild(legend);
 
+    /* =====================================================
+       MAP RESIZE
+    ===================================================== */
+
+    const resizeObserver =
+      new ResizeObserver(() => {
+        map.invalidateSize({
+          animate: false,
+        });
+      });
+
+    resizeObserver.observe(
+      mapContainer.current
+    );
+
+    window.setTimeout(() => {
+      map.invalidateSize({
+        animate: false,
+      });
+    }, 100);
+
     return () => {
+      resizeObserver.disconnect();
       map.remove();
       mapRef.current = null;
     };
@@ -483,18 +511,22 @@ export default function MapView() {
       location.zoom,
       {
         animate: true,
-        duration: 1.5,
+        duration: 1.2,
         easeLinearity: 0.25,
       }
     );
 
     const resizeTimer =
       window.setTimeout(() => {
-        map.invalidateSize();
+        map.invalidateSize({
+          animate: false,
+        });
       }, 300);
 
     return () => {
-      window.clearTimeout(resizeTimer);
+      window.clearTimeout(
+        resizeTimer
+      );
     };
   }, [city]);
 
@@ -526,11 +558,10 @@ export default function MapView() {
     }
 
     /*
-     * This remains a synthetic rainfall visualization.
+     * Synthetic rainfall visualization.
      *
-     * The current backend does not provide a radar/raster
-     * rainfall image. A real radar or raster product can
-     * replace this overlay later.
+     * Current backend does not provide a radar/raster
+     * rainfall image.
      */
 
     const rainfallSvg = `
@@ -640,7 +671,9 @@ export default function MapView() {
 
     const svgUrl =
       "data:image/svg+xml;charset=UTF-8," +
-      encodeURIComponent(rainfallSvg);
+      encodeURIComponent(
+        rainfallSvg
+      );
 
     const rainfallBounds =
       CITY_BOUNDS[city] ||
@@ -651,7 +684,7 @@ export default function MapView() {
         svgUrl,
         rainfallBounds,
         {
-          opacity: 0.38,
+          opacity: 0.34,
           interactive: false,
         }
       );
@@ -671,9 +704,10 @@ export default function MapView() {
         {
           color: "#374151",
           weight: 2,
-          opacity: 0.85,
+          opacity: 0.75,
           fill: false,
-          dashArray: "7, 5",
+          dashArray: "7,5",
+          interactive: false,
         }
       );
 
@@ -752,14 +786,10 @@ export default function MapView() {
        PROTOTYPE FLOOD ZONES
     ===================================================== */
 
-    /*
-     * The backend does not currently return geographic
-     * flood polygons. These therefore remain prototype
-     * visualization data.
-     */
-
     if (
-      state.activeLayers.has("floodRisk")
+      state.activeLayers.has(
+        "floodRisk"
+      )
     ) {
       data.floodZones.forEach(
         (zone) => {
@@ -816,15 +846,10 @@ export default function MapView() {
        PROTOTYPE HOTSPOTS
     ===================================================== */
 
-    /*
-     * The backend currently does not provide a complete
-     * street-level hotspot geometry dataset.
-     *
-     * These remain prototype visualization points.
-     */
-
     if (
-      state.activeLayers.has("floodRisk")
+      state.activeLayers.has(
+        "floodRisk"
+      )
     ) {
       data.hotspots.forEach(
         (hotspot) => {
@@ -884,22 +909,12 @@ export default function MapView() {
       city === "delhi" &&
       drainageAssets.length > 0;
 
-    /*
-     * For Delhi, the backend drainage assets take
-     * priority whenever they are available.
-     *
-     * The prototype drainage network is shown only when:
-     *
-     * 1. Backend drainage data is unavailable, or
-     * 2. The backend request failed.
-     *
-     * This prevents duplicate mock + backend drainage
-     * markers from appearing on the map.
-     */
-
     if (
-      state.activeLayers.has("drainage") &&
-      (!hasBackendDrainage || backendError)
+      state.activeLayers.has(
+        "drainage"
+      ) &&
+      (!hasBackendDrainage ||
+        backendError)
     ) {
       const nodePositions =
         new Map<
@@ -948,6 +963,10 @@ export default function MapView() {
               }
             );
 
+          line.bindTooltip(
+            "Prototype drainage network"
+          );
+
           line.addTo(map);
 
           drainageLinesRef.current.push(
@@ -955,8 +974,6 @@ export default function MapView() {
           );
         }
       );
-
-      /* Prototype drainage node colors */
 
       const nodeColors: Record<
         string,
@@ -968,8 +985,6 @@ export default function MapView() {
         Blocked: "#991B1B",
         Backflow: "#7C3AED",
       };
-
-      /* Prototype drainage nodes */
 
       data.drainageNodes.forEach(
         (node) => {
@@ -1028,7 +1043,9 @@ export default function MapView() {
     ===================================================== */
 
     if (
-      state.activeLayers.has("drainage") &&
+      state.activeLayers.has(
+        "drainage"
+      ) &&
       city === "delhi" &&
       !backendError
     ) {
@@ -1043,10 +1060,6 @@ export default function MapView() {
             getValidCoordinate(
               asset.longitude
             );
-
-          /*
-           * Never render invalid coordinates.
-           */
 
           if (
             latitude === null ||
@@ -1102,25 +1115,10 @@ export default function MapView() {
        REAL BACKEND FLOOD MODEL NODES
     ===================================================== */
 
-    /*
-     * The backend returns:
-     *
-     * - SWMM node ID
-     * - maximum depth
-     * - risk
-     * - flooding state
-     *
-     * It does not directly return coordinates for every
-     * SWMM node.
-     *
-     * Therefore we match each SWMM node against a backend
-     * drainage asset that has coordinates.
-     *
-     * We deliberately do NOT invent coordinates.
-     */
-
     if (
-      state.activeLayers.has("floodRisk") &&
+      state.activeLayers.has(
+        "floodRisk"
+      ) &&
       city === "delhi" &&
       !backendError &&
       floodStatus?.nodes
@@ -1193,8 +1191,9 @@ export default function MapView() {
             );
 
           const depthCm =
-            Number(node.max_depth_m) *
-            100;
+            Number(
+              node.max_depth_m
+            ) * 100;
 
           marker.bindTooltip(
             `
@@ -1206,7 +1205,9 @@ export default function MapView() {
                 Number.isFinite(
                   depthCm
                 )
-                  ? depthCm.toFixed(1)
+                  ? depthCm.toFixed(
+                      1
+                    )
                   : "—"
               } cm<br/>
               Status: ${backendNodeStatus(
@@ -1245,13 +1246,29 @@ export default function MapView() {
   ======================================================= */
 
   return (
-    <div className="relative h-full w-full">
+    <div
+      className="
+        relative
+        z-0
+        h-full
+        w-full
+        min-h-0
+        overflow-hidden
+      "
+    >
+      {/* ===================================================
+          LEAFLET MAP
+      =================================================== */}
+
       <div
         ref={mapContainer}
-        style={{
-          width: "100%",
-          height: "500px",
-        }}
+        className="
+          absolute
+          inset-0
+          h-full
+          w-full
+          z-0
+        "
       />
 
       {/* ===================================================
@@ -1259,8 +1276,38 @@ export default function MapView() {
       =================================================== */}
 
       {backendLoading && (
-        <div className="absolute left-3 top-3 z-1000 rounded-md border border-blue-200 bg-white/95 px-3 py-2 text-[11px] text-blue-800 shadow-sm">
-          Updating flood model…
+        <div
+          className="
+            absolute
+            left-3
+            top-19
+            sm:top-3
+            z-1500
+            rounded-[5px]
+            border border-blue-200
+            bg-white/95
+            backdrop-blur-sm
+            px-3
+            py-2
+            text-[11px]
+            text-blue-800
+            shadow-sm
+          "
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className="
+                h-2
+                w-2
+                shrink-0
+                rounded-full
+                bg-blue-500
+                animate-pulse
+              "
+            />
+
+            Updating flood model…
+          </div>
         </div>
       )}
 
@@ -1269,7 +1316,26 @@ export default function MapView() {
       =================================================== */}
 
       {backendError && (
-        <div className="absolute bottom-3 left-3 z-1000 max-w-xs rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-4 text-amber-800 shadow-sm">
+        <div
+          className="
+            absolute
+            bottom-19
+            sm:bottom-3
+            left-3
+            z-1500
+            max-w-xs
+            rounded-[5px]
+            border border-amber-200
+            bg-amber-50/95
+            backdrop-blur-sm
+            px-3
+            py-2
+            text-[11px]
+            leading-4
+            text-amber-800
+            shadow-sm
+          "
+        >
           <strong>
             Backend unavailable.
           </strong>
@@ -1287,73 +1353,144 @@ export default function MapView() {
       {!backendLoading &&
         !backendError &&
         floodStatus && (
-          <div className="absolute left-3 top-3 z-1000 rounded-md border border-stone-200 bg-white/95 px-3 py-2 shadow-sm">
-            <div className="text-[9px] font-semibold uppercase tracking-wide text-stone-500">
-              Backend flood model
-            </div>
+          <div
+            className="
+              absolute
+              left-3
+              top-28
+              sm:top-28
+              z-1600
+              w-45
+              sm:w-48.75
+              max-w-[calc(100vw-1.5rem)]
+              rounded-[5px]
+              border border-stone-200
+              bg-white/95
+              backdrop-blur-sm
+              shadow-[0_3px_12px_rgba(0,0,0,0.12)]
+              overflow-hidden
+            "
+          >
+            <div className="px-3 pt-2.5 pb-2">
+              <div
+                className="
+                  text-[9px]
+                  font-semibold
+                  uppercase
+                  tracking-wide
+                  text-stone-500
+                "
+              >
+                Live flood model
+              </div>
 
-            <div className="mt-1 flex items-center gap-2">
-              <span
-                className="h-2.5 w-2.5 rounded-full"
-                style={{
-                  backgroundColor:
-                    backendRiskColor(
-                      floodStatus.overall_risk ||
-                        undefined
-                    ),
-                }}
-              />
+              <div className="mt-1.5 flex items-center gap-2">
+                <span
+                  className="
+                    h-2.5
+                    w-2.5
+                    shrink-0
+                    rounded-full
+                  "
+                  style={{
+                    backgroundColor:
+                      backendRiskColor(
+                        floodStatus.overall_risk ||
+                          undefined
+                      ),
+                  }}
+                />
 
-              <span className="text-xs font-bold uppercase text-stone-800">
-                {floodStatus.overall_risk ||
-                  floodStatus.status}
-              </span>
-            </div>
+                <span
+                  className="
+                    text-xs
+                    font-bold
+                    uppercase
+                    text-stone-800
+                  "
+                >
+                  {floodStatus.overall_risk ||
+                    floodStatus.status}
+                </span>
+              </div>
 
-            {typeof floodStatus.confidence ===
-              "number" && (
-              <div className="mt-1 text-[10px] text-stone-500">
-                Model confidence{" "}
-                {Math.round(
-                  floodStatus.confidence * 100
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
+                {typeof floodStatus.confidence ===
+                  "number" && (
+                  <div>
+                    <div className="text-[9px] text-stone-400 uppercase">
+                      Confidence
+                    </div>
+
+                    <div className="font-mono text-[11px] font-semibold text-stone-700">
+                      {Math.round(
+                        floodStatus.confidence *
+                          100
+                      )}
+                      %
+                    </div>
+                  </div>
                 )}
-                %
-              </div>
-            )}
 
-            {typeof floodStatus.peak_depth_m ===
-              "number" && (
-              <div className="mt-0.5 text-[10px] text-stone-500">
-                Peak depth{" "}
-                {(
-                  floodStatus.peak_depth_m *
-                  100
-                ).toFixed(1)}
-                cm
-              </div>
-            )}
+                {typeof floodStatus.peak_depth_m ===
+                  "number" && (
+                  <div>
+                    <div className="text-[9px] text-stone-400 uppercase">
+                      Peak depth
+                    </div>
 
-            {typeof floodStatus.forecast_rainfall_mm ===
-              "number" && (
-              <div className="mt-0.5 text-[10px] text-stone-500">
-                Forecast rainfall{" "}
-                {floodStatus.forecast_rainfall_mm.toFixed(
-                  1
+                    <div className="font-mono text-[11px] font-semibold text-stone-700">
+                      {(
+                        floodStatus.peak_depth_m *
+                        100
+                      ).toFixed(1)}
+                      cm
+                    </div>
+                  </div>
                 )}
-                mm
               </div>
-            )}
 
-            {floodStatus.critical_nodes &&
-              floodStatus.critical_nodes.length >
-                0 && (
-                <div className="mt-1 text-[10px] text-stone-500">
-                  Critical nodes{" "}
-                  {floodStatus.critical_nodes.join(
-                    ", "
-                  )}
+              {typeof floodStatus.forecast_rainfall_mm ===
+                "number" && (
+                <div className="mt-2 border-t border-stone-100 pt-2">
+                  <div className="text-[9px] uppercase text-stone-400">
+                    Forecast rainfall
+                  </div>
+
+                  <div className="font-mono text-[11px] font-semibold text-blue-700">
+                    {floodStatus.forecast_rainfall_mm.toFixed(
+                      1
+                    )}{" "}
+                    mm
+                  </div>
                 </div>
               )}
+
+              {floodStatus.critical_nodes &&
+                floodStatus.critical_nodes.length >
+                  0 && (
+                  <div className="mt-1.5 text-[9px] leading-3.5 text-stone-500">
+                    Critical nodes{" "}
+                    {floodStatus.critical_nodes.join(
+                      ", "
+                    )}
+                  </div>
+                )}
+            </div>
+
+            <div
+              className="
+                border-t
+                border-stone-100
+                bg-stone-50
+                px-3
+                py-1.5
+                text-[9px]
+                text-stone-500
+              "
+            >
+              Backend hydraulic model
+            </div>
           </div>
         )}
     </div>
