@@ -103,3 +103,62 @@ class SimulationRun(Base):
         String(500),
         nullable=True
     )
+
+class CitizenReport(Base):
+    __tablename__ = "citizen_reports"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True
+    )
+
+    issue_type: Mapped[str] = mapped_column(
+        String(60)
+    )
+
+    location: Mapped[str] = mapped_column(
+        String(255)
+    )
+
+    latitude: Mapped[float] = mapped_column(
+        Float
+    )
+
+    longitude: Mapped[float] = mapped_column(
+        Float
+    )
+
+    severity: Mapped[str] = mapped_column(
+        String(20),
+        default="LOW"
+    )
+
+    description: Mapped[str | None] = mapped_column(
+        String(1000),
+        nullable=True
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(40),
+        default="Under verification"
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow
+    )
+
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True
+    )
+
+    assigned_team: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True
+    )
+
+    model_relevant: Mapped[bool] = mapped_column(
+        default=False,
+        nullable=False
+    )

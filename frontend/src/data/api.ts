@@ -321,6 +321,102 @@ export function getFloodStatus(
 }
 
 /* =========================================================
+   CITIZEN REPORTS
+   POST /api/reports
+   GET /api/reports
+   PATCH /api/reports/{id}/verify
+   PATCH /api/reports/{id}/status
+========================================================= */
+
+export interface CitizenReport {
+  id: number;
+  issue_type: string;
+  location: string;
+  latitude: number;
+  longitude: number;
+  severity: string;
+  description?: string | null;
+  status: string;
+  created_at: string;
+  verified_at?: string | null;
+  assigned_team?: string | null;
+  model_relevant: boolean;
+}
+
+export interface CitizenReportCreate {
+  issue_type: string;
+  location: string;
+  latitude: number;
+  longitude: number;
+  severity: string;
+  description?: string;
+}
+
+export async function createCitizenReport(
+  report: CitizenReportCreate
+): Promise<CitizenReport> {
+  return apiRequest<CitizenReport>("/reports", {
+    method: "POST",
+    body: JSON.stringify(report),
+  });
+}
+
+export async function getCitizenReports(
+  status?: string,
+  severity?: string
+): Promise<CitizenReport[]> {
+  const searchParams = new URLSearchParams();
+
+  if (status) {
+    searchParams.set("status", status);
+  }
+
+  if (severity) {
+    searchParams.set("severity", severity);
+  }
+
+  const query = searchParams.toString();
+
+  return apiRequest<CitizenReport[]>(
+    `/reports${query ? `?${query}` : ""}`
+  );
+}
+
+export interface CitizenReportVerification {
+  verified: boolean;
+  model_relevant: boolean;
+  assigned_team?: string | null;
+}
+
+export async function verifyCitizenReport(
+  reportId: number,
+  verification: CitizenReportVerification
+): Promise<CitizenReport> {
+  return apiRequest<CitizenReport>(
+    `/reports/${reportId}/verify`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(verification),
+    }
+  );
+}
+
+export async function updateCitizenReportStatus(
+  reportId: number,
+  status: string
+): Promise<CitizenReport> {
+  return apiRequest<CitizenReport>(
+    `/reports/${reportId}/status`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        status,
+      }),
+    }
+  );
+}
+
+/* =========================================================
    API BASE URL
 ========================================================= */
 

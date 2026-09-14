@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -39,6 +40,62 @@ class DrainageAssetOut(BaseModel):
 
     swmm_node_id: Optional[str] = None
 
+class CitizenReportCreate(BaseModel):
+
+    issue_type: str
+
+    location: str
+
+    latitude: float
+
+    longitude: float
+
+    severity: str = "LOW"
+
+    description: Optional[str] = None
+
+
+class CitizenReportOut(BaseModel):
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+
+    issue_type: str
+
+    location: str
+
+    latitude: float
+
+    longitude: float
+
+    severity: str
+
+    description: Optional[str] = None
+
+    status: str
+
+    created_at: datetime
+
+    verified_at: Optional[datetime] = None
+
+    assigned_team: Optional[str] = None
+
+    model_relevant: bool
+
+
+class ReportVerifyRequest(BaseModel):
+
+    verified: bool
+
+    model_relevant: bool = False
+
+    assigned_team: Optional[str] = None
+
+
+class ReportStatusRequest(BaseModel):
+
+    status: str
 
 class FloodStatusResponse(BaseModel):
 

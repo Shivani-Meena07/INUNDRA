@@ -10,7 +10,11 @@ from app.core.config import settings
 from app.core.security import require_api_key
 from app.core.limiter import limiter, RATE_LIMIT
 from app.db.session import get_db
-from app.models.models import WeatherObservation, DrainageAsset
+from app.models.models import (
+    WeatherObservation,
+    DrainageAsset,
+    CitizenReport,
+)
 from app.services.weather import fetch_open_meteo, fetch_metar, rainfall_rate_mm_hr
 from app.services.sources import (
     fetch_imd,
@@ -23,8 +27,16 @@ from app.services.swmm import build_runtime_swmm_input, run_swmm
 from app.services.hydrology import classify_depth, estimate_confidence
 from app.services.geo import nearby_drainage_assets
 from app.services.ai_summary import generate_flood_briefing
-from app.schemas import FloodStatusResponse, LocationInfo, NodeRisk, DrainageAssetOut
-
+from app.schemas import (
+    FloodStatusResponse,
+    LocationInfo,
+    NodeRisk,
+    DrainageAssetOut,
+    CitizenReportCreate,
+    CitizenReportOut,
+    ReportVerifyRequest,
+    ReportStatusRequest,
+)
 
 router = APIRouter()
 
@@ -134,6 +146,154 @@ def list_drainage_assets(
 
     return assets
 
+@router.post(
+    "/reports",
+    response_model=CitizenReportOut,
+    dependencies=[Depends(require_api_key)]
+)
+@limiter.limit(RATE_LIMIT)
+def create_citizen_report(
+    request: Request,
+    report: CitizenReportCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Creates a citizen-reported flood/drainage incident.
+
+    New reports start as "Under verification". Authority users can
+    subsequently verify the report and mark it as relevant to the
+    flood model.
+    """
+    new_report = CitizenReport(
+        issue_type=report.issue_type,
+        location=report.location,
+        latitude=report.latitude,
+        longitude=report.longitude,
+        severity=report.severity,
+        description=report.description,
+        status="Under verification",
+        model_relevant=False,
+    )
+
+    db.add(new_report)
+    db.commit()
+    db.refresh(new_report)
+
+    return new_report
+
+
+@router.get(
+    "/reports",
+    response_model=list[CitizenReportOut],
+    dependencies=[Depends(require_api_key)]
+)
+@limiter.limit(RATE_LIMIT)
+def list_citizen_reports(
+    request: Request,
+    status: Optional[str] = Query(
+        None,
+        description="Filter reports by status."
+    ),
+    severity: Optional[str] = Query(
+        None,
+        description="Filter reports by severity."
+    ),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns citizen reports for the authority incident-management
+    screen and citizen report history.
+    """
+    query = db.query(CitizenReport)
+
+    if status:
+        query = query.filter(CitizenReport.status == status)
+
+    if severity:
+        query = query.filter(CitizenReport.severity == severity)
+
+    return query.order_by(CitizenReport.created_at.desc()).all()
+
+
+@router.patch(
+    "/reports/{report_id}/verify",
+    response_model=CitizenReportOut,
+    dependencies=[Depends(require_api_key)]
+)
+@limiter.limit(RATE_LIMIT)
+def verify_citizen_report(
+    request: Request,
+    report_id: int,
+    verification: ReportVerifyRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Authority workflow for verifying a citizen report.
+
+    A verified report can optionally be marked as model-relevant,
+    allowing it to become feedback for future flood-model updates.
+    """
+    report = db.query(CitizenReport).filter(
+        CitizenReport.id == report_id
+    ).first()
+
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Citizen report not found."
+        )
+
+    if verification.verified:
+        report.status = "Confirmed"
+        report.verified_at = datetime.utcnow()
+    else:
+        report.status = "Rejected"
+        report.verified_at = None
+
+    report.model_relevant = verification.model_relevant
+    report.assigned_team = verification.assigned_team
+
+    db.commit()
+    db.refresh(report)
+
+    return report
+
+
+@router.patch(
+    "/reports/{report_id}/status",
+    response_model=CitizenReportOut,
+    dependencies=[Depends(require_api_key)]
+)
+@limiter.limit(RATE_LIMIT)
+def update_citizen_report_status(
+    request: Request,
+    report_id: int,
+    status_update: ReportStatusRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Updates the operational status of a citizen incident.
+    """
+    report = db.query(CitizenReport).filter(
+        CitizenReport.id == report_id
+    ).first()
+
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Citizen report not found."
+        )
+
+    report.status = status_update.status
+
+    if status_update.status.lower() in {"resolved", "closed"}:
+        if report.verified_at is None:
+            report.verified_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(report)
+
+    return report
 
 @router.get(
     "/flood/status",

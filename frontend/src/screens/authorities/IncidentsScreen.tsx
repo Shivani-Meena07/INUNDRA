@@ -1,6 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../../state/AppContext";
-import { cityData, RiskLevel } from "../../data/mockData";
+import { cityData } from "../../data/mockData";
+import {
+  CitizenReport,
+  getCitizenReports,
+  verifyCitizenReport,
+  updateCitizenReportStatus,
+} from "../../data/api";
 
 type IncidentStatus =
   | "Under verification"
@@ -11,6 +17,7 @@ type IncidentStatus =
 type IncidentSeverity = "CRITICAL" | "HIGH" | "MODERATE" | "LOW";
 
 type AuthorityIncident = {
+  reportId: number;
   id: string;
   title: string;
   description: string;
@@ -18,8 +25,9 @@ type AuthorityIncident = {
   severity: IncidentSeverity;
   status: IncidentStatus;
   reportedAt: string;
-  source: "Citizen" | "Authority";
+  source: "Citizen";
   assignedTeam?: string;
+  modelRelevant: boolean;
 };
 
 const severityConfig: Record<
@@ -72,7 +80,94 @@ const statusConfig: Record<
   },
 };
 
-function SeverityBadge({ severity }: { severity: IncidentSeverity }) {
+function normalizeSeverity(value: string): IncidentSeverity {
+  switch (value.toUpperCase()) {
+    case "CRITICAL":
+      return "CRITICAL";
+    case "HIGH":
+      return "HIGH";
+    case "MODERATE":
+    case "MEDIUM":
+      return "MODERATE";
+    case "LOW":
+      return "LOW";
+    default:
+      return "LOW";
+  }
+}
+
+function normalizeStatus(value: string): IncidentStatus {
+  switch (value.toLowerCase()) {
+    case "confirmed":
+      return "Verified";
+    case "assigned":
+      return "Assigned";
+    case "resolved":
+    case "closed":
+      return "Resolved";
+    case "rejected":
+      return "Resolved";
+    case "under verification":
+    default:
+      return "Under verification";
+  }
+}
+
+function issueTitle(issueType: string): string {
+  switch (issueType) {
+    case "Blocked Drain":
+      return "Possible blocked drainage inlet";
+    case "Waterlogging":
+      return "Waterlogging reported";
+    case "Drain Overflow":
+      return "Drain overflow reported";
+    case "Damaged Drain":
+      return "Damaged drainage infrastructure";
+    default:
+      return "Citizen flood observation";
+  }
+}
+
+function formatReportedAt(createdAt: string): string {
+  const date = new Date(createdAt);
+
+  if (Number.isNaN(date.getTime())) {
+    return createdAt;
+  }
+
+  return date.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function mapReportToIncident(
+  report: CitizenReport,
+): AuthorityIncident {
+  return {
+    reportId: report.id,
+    id: `IN-${String(report.id).padStart(4, "0")}`,
+    title: issueTitle(report.issue_type),
+    description:
+      report.description ||
+      "No additional description was provided by the citizen.",
+    location: report.location,
+    severity: normalizeSeverity(report.severity),
+    status: normalizeStatus(report.status),
+    reportedAt: formatReportedAt(report.created_at),
+    source: "Citizen",
+    assignedTeam: report.assigned_team ?? undefined,
+    modelRelevant: report.model_relevant,
+  };
+}
+
+function SeverityBadge({
+  severity,
+}: {
+  severity: IncidentSeverity;
+}) {
   const config = severityConfig[severity];
 
   return (
@@ -84,7 +179,11 @@ function SeverityBadge({ severity }: { severity: IncidentSeverity }) {
   );
 }
 
-function StatusBadge({ status }: { status: IncidentStatus }) {
+function StatusBadge({
+  status,
+}: {
+  status: IncidentStatus;
+}) {
   const config = statusConfig[status];
 
   return (
@@ -107,11 +206,17 @@ function SummaryCard({
 }) {
   return (
     <div className="rounded-2xl border border-black/5 bg-white p-5 shadow-sm">
-      <p className="text-sm font-medium text-slate-500">{label}</p>
+      <p className="text-sm font-medium text-slate-500">
+        {label}
+      </p>
+
       <p className="mt-2 text-3xl font-bold tracking-tight text-slate-900">
         {value}
       </p>
-      <p className="mt-1 text-xs text-slate-500">{detail}</p>
+
+      <p className="mt-1 text-xs text-slate-500">
+        {detail}
+      </p>
     </div>
   );
 }
@@ -139,6 +244,12 @@ function IncidentCard({
             <SeverityBadge severity={incident.severity} />
 
             <StatusBadge status={incident.status} />
+
+            {incident.modelRelevant && (
+              <span className="rounded-full border border-purple-200 bg-purple-50 px-2.5 py-1 text-xs font-semibold text-purple-800">
+                Model relevant
+              </span>
+            )}
           </div>
 
           <h3 className="mt-3 text-base font-bold text-slate-900">
@@ -153,6 +264,12 @@ function IncidentCard({
             <span>📍 {incident.location}</span>
             <span>🕒 {incident.reportedAt}</span>
             <span>Source: {incident.source}</span>
+
+            {incident.assignedTeam && (
+              <span>
+                Team: {incident.assignedTeam}
+              </span>
+            )}
           </div>
         </div>
 
@@ -168,15 +285,100 @@ function IncidentCard({
 function IncidentDetailPanel({
   incident,
   onClose,
+  onUpdated,
 }: {
   incident: AuthorityIncident;
   onClose: () => void;
+  onUpdated: () => Promise<void>;
 }) {
-  const [status, setStatus] = useState<IncidentStatus>(incident.status);
-  const [team, setTeam] = useState(incident.assignedTeam ?? "");
+  const [team, setTeam] = useState(
+    incident.assignedTeam ?? "",
+  );
 
-  const handleStatusChange = (nextStatus: IncidentStatus) => {
-    setStatus(nextStatus);
+  const [modelRelevant, setModelRelevant] =
+    useState(incident.modelRelevant);
+
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const [currentStatus, setCurrentStatus] =
+    useState<IncidentStatus>(incident.status);
+
+  const saveUpdate = async () => {
+    setSaving(true);
+    setError("");
+
+    try {
+      /*
+       * Verification endpoint controls whether the report is
+       * confirmed/rejected, model relevance and team assignment.
+       */
+      if (
+        currentStatus === "Verified" ||
+        currentStatus === "Assigned"
+      ) {
+        await verifyCitizenReport(
+          incident.reportId,
+          {
+            verified: true,
+            model_relevant: modelRelevant,
+            assigned_team: team || null,
+          },
+        );
+      }
+
+      /*
+       * Once verified, operational status can move through
+       * Assigned / Resolved.
+       */
+      if (
+        currentStatus === "Assigned" ||
+        currentStatus === "Resolved"
+      ) {
+        await updateCitizenReportStatus(
+          incident.reportId,
+          currentStatus,
+        );
+      }
+
+      await onUpdated();
+      onClose();
+    } catch (updateError) {
+      setError(
+        updateError instanceof Error
+          ? updateError.message
+          : "Unable to save the operational update.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const rejectReport = async () => {
+    setSaving(true);
+    setError("");
+
+    try {
+      await verifyCitizenReport(
+        incident.reportId,
+        {
+          verified: false,
+          model_relevant: false,
+          assigned_team: null,
+        },
+      );
+
+      await onUpdated();
+      onClose();
+    } catch (updateError) {
+      setError(
+        updateError instanceof Error
+          ? updateError.message
+          : "Unable to reject the report.",
+      );
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -196,7 +398,8 @@ function IncidentDetailPanel({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg px-3 py-2 text-xl text-slate-500 hover:bg-slate-100"
+            disabled={saving}
+            className="rounded-lg px-3 py-2 text-xl text-slate-500 hover:bg-slate-100 disabled:opacity-50"
             aria-label="Close incident"
           >
             ×
@@ -206,8 +409,17 @@ function IncidentDetailPanel({
         <div className="space-y-6 p-5">
           <section>
             <div className="flex flex-wrap gap-2">
-              <SeverityBadge severity={incident.severity} />
-              <StatusBadge status={status} />
+              <SeverityBadge
+                severity={incident.severity}
+              />
+
+              <StatusBadge status={currentStatus} />
+
+              {modelRelevant && (
+                <span className="inline-flex items-center rounded-full border border-purple-200 bg-purple-50 px-2.5 py-1 text-xs font-semibold text-purple-800">
+                  Model relevant
+                </span>
+              )}
             </div>
 
             <h3 className="mt-4 text-xl font-bold text-slate-900">
@@ -224,6 +436,7 @@ function IncidentDetailPanel({
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
                 Location
               </p>
+
               <p className="mt-2 text-sm font-semibold text-slate-800">
                 {incident.location}
               </p>
@@ -233,6 +446,7 @@ function IncidentDetailPanel({
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
                 Reported
               </p>
+
               <p className="mt-2 text-sm font-semibold text-slate-800">
                 {incident.reportedAt}
               </p>
@@ -242,18 +456,20 @@ function IncidentDetailPanel({
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
                 Source
               </p>
+
               <p className="mt-2 text-sm font-semibold text-slate-800">
-                {incident.source}
+                Citizen report
               </p>
             </div>
 
             <div className="rounded-xl bg-slate-50 p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                Severity
+                Coordinates
               </p>
-              <div className="mt-2">
-                <SeverityBadge severity={incident.severity} />
-              </div>
+
+              <p className="mt-2 text-xs font-mono text-slate-700">
+                {incident.reportId}
+              </p>
             </div>
           </section>
 
@@ -269,20 +485,31 @@ function IncidentDetailPanel({
                 </span>
 
                 <select
-                  value={status}
+                  value={currentStatus}
                   onChange={(event) =>
-                    handleStatusChange(
-                      event.target.value as IncidentStatus,
+                    setCurrentStatus(
+                      event.target
+                        .value as IncidentStatus,
                     )
                   }
-                  className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-[#7f1d1d]"
+                  disabled={saving}
+                  className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-[#7f1d1d] disabled:bg-slate-50"
                 >
                   <option value="Under verification">
                     Under verification
                   </option>
-                  <option value="Verified">Verified</option>
-                  <option value="Assigned">Assigned</option>
-                  <option value="Resolved">Resolved</option>
+
+                  <option value="Verified">
+                    Verified
+                  </option>
+
+                  <option value="Assigned">
+                    Assigned
+                  </option>
+
+                  <option value="Resolved">
+                    Resolved
+                  </option>
                 </select>
               </label>
 
@@ -293,23 +520,59 @@ function IncidentDetailPanel({
 
                 <select
                   value={team}
-                  onChange={(event) => setTeam(event.target.value)}
-                  className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-[#7f1d1d]"
+                  onChange={(event) =>
+                    setTeam(event.target.value)
+                  }
+                  disabled={saving}
+                  className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-[#7f1d1d] disabled:bg-slate-50"
                 >
-                  <option value="">Not assigned</option>
+                  <option value="">
+                    Not assigned
+                  </option>
+
                   <option value="Drainage Response Team">
                     Drainage Response Team
                   </option>
+
                   <option value="Field Inspection Team">
                     Field Inspection Team
                   </option>
+
                   <option value="Emergency Response Team">
                     Emergency Response Team
                   </option>
+
                   <option value="Traffic Management Team">
                     Traffic Management Team
                   </option>
                 </select>
+              </label>
+
+              <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-purple-200 bg-purple-50 p-4">
+                <input
+                  type="checkbox"
+                  checked={modelRelevant}
+                  onChange={(event) =>
+                    setModelRelevant(
+                      event.target.checked,
+                    )
+                  }
+                  disabled={saving}
+                  className="mt-1 h-4 w-4 accent-[#7f1d1d]"
+                />
+
+                <span>
+                  <span className="block text-sm font-semibold text-purple-900">
+                    Mark as model-relevant
+                  </span>
+
+                  <span className="mt-1 block text-xs leading-5 text-purple-800">
+                    Use this when the verified observation
+                    provides useful evidence about drainage,
+                    water accumulation or infrastructure
+                    condition.
+                  </span>
+                </span>
               </label>
             </div>
           </section>
@@ -320,28 +583,56 @@ function IncidentDetailPanel({
             </p>
 
             <p className="mt-1 text-sm leading-6 text-amber-800">
-              A verified drainage-related incident can become model feedback
-              in the production system. This prototype records the operational
-              decision locally; it does not yet recalibrate the flood model.
+              Marking a report as model-relevant persists that
+              operational decision in the backend. The current
+              prototype does not automatically modify or
+              recalibrate the SWMM model from this action.
             </p>
           </section>
 
-          <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+          {error && (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+              <p className="text-sm font-semibold text-red-900">
+                Update failed
+              </p>
+
+              <p className="mt-1 text-xs leading-5 text-red-700">
+                {error}
+              </p>
+            </div>
+          )}
+
+          <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
             <button
               type="button"
-              onClick={onClose}
-              className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              onClick={rejectReport}
+              disabled={saving}
+              className="rounded-xl border border-red-200 px-4 py-3 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
             >
-              Close
+              {saving ? "Saving..." : "Reject report"}
             </button>
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-xl bg-[#7f1d1d] px-5 py-3 text-sm font-semibold text-white hover:bg-[#681818]"
-            >
-              Save operational update
-            </button>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={saving}
+                className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={saveUpdate}
+                disabled={saving}
+                className="rounded-xl bg-[#7f1d1d] px-5 py-3 text-sm font-semibold text-white hover:bg-[#681818] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {saving
+                  ? "Saving..."
+                  : "Save operational update"}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -354,102 +645,83 @@ export default function AuthorityIncidentsScreen() {
 
   const city = cityData[state.city];
 
-  /*
-   * Prototype incident queue.
-   *
-   * Production version:
-   * - Load incidents from the backend.
-   * - Verify reports against sensor/model/GIS evidence.
-   * - Persist status and team assignment.
-   * - Feed confirmed drainage incidents back into the model.
-   */
-  const incidents = useMemo<AuthorityIncident[]>(
-    () => [
-      {
-        id: "INC-1042",
-        title: "Water accumulation reported near major junction",
-        description:
-          "Citizen report indicates rapidly rising water and reduced road passability.",
-        location: city.name,
-        severity: "CRITICAL",
-        status: "Under verification",
-        reportedAt: "12 min ago",
-        source: "Citizen",
-      },
-      {
-        id: "INC-1041",
-        title: "Possible blocked drainage inlet",
-        description:
-          "Standing water persists despite rainfall intensity beginning to decline.",
-        location: city.name,
-        severity: "HIGH",
-        status: "Verified",
-        reportedAt: "27 min ago",
-        source: "Citizen",
-        assignedTeam: "Drainage Response Team",
-      },
-      {
-        id: "INC-1039",
-        title: "Road inundation affecting local traffic",
-        description:
-          "Flood depth is increasing along a low-lying road segment.",
-        location: city.name,
-        severity: "HIGH",
-        status: "Assigned",
-        reportedAt: "41 min ago",
-        source: "Authority",
-        assignedTeam: "Traffic Management Team",
-      },
-      {
-        id: "INC-1037",
-        title: "Drainage node showing elevated stress",
-        description:
-          "Model indicates high hydraulic utilization around the affected area.",
-        location: city.name,
-        severity: "MODERATE",
-        status: "Verified",
-        reportedAt: "58 min ago",
-        source: "Authority",
-        assignedTeam: "Field Inspection Team",
-      },
-      {
-        id: "INC-1032",
-        title: "Minor waterlogging reported",
-        description:
-          "Low-severity citizen observation with limited road impact.",
-        location: city.name,
-        severity: "LOW",
-        status: "Resolved",
-        reportedAt: "1 hr ago",
-        source: "Citizen",
-      },
-    ],
-    [city.name],
+  const [reports, setReports] = useState<CitizenReport[]>(
+    [],
   );
 
-  const [filter, setFilter] = useState<"ALL" | IncidentStatus>("ALL");
+  const [loading, setLoading] = useState(true);
+
+  const [error, setError] = useState("");
+
+  const [filter, setFilter] = useState<
+    "ALL" | IncidentStatus
+  >("ALL");
+
   const [selectedIncident, setSelectedIncident] =
     useState<AuthorityIncident | null>(null);
+
+  const loadReports = async () => {
+    try {
+      setError("");
+
+      const data = await getCitizenReports();
+
+      setReports(data);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Unable to load citizen reports.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadReports();
+
+    const interval = window.setInterval(() => {
+      void loadReports();
+    }, 30000);
+
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const incidents = useMemo(
+    () =>
+      reports.map((report) =>
+        mapReportToIncident(report),
+      ),
+    [reports],
+  );
 
   const filteredIncidents = useMemo(() => {
     if (filter === "ALL") {
       return incidents;
     }
 
-    return incidents.filter((incident) => incident.status === filter);
+    return incidents.filter(
+      (incident) => incident.status === filter,
+    );
   }, [filter, incidents]);
 
   const counts = useMemo(
     () => ({
       total: incidents.length,
+
       verification: incidents.filter(
-        (incident) => incident.status === "Under verification",
+        (incident) =>
+          incident.status ===
+          "Under verification",
       ).length,
+
       active: incidents.filter(
         (incident) =>
           incident.status === "Verified" ||
           incident.status === "Assigned",
       ).length,
+
       critical: incidents.filter(
         (incident) =>
           incident.severity === "CRITICAL" &&
@@ -481,14 +753,42 @@ export default function AuthorityIncidentsScreen() {
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
               Operational queue
             </p>
+
             <p className="mt-1 text-sm font-bold text-slate-800">
-              {counts.total} reports
+              {loading ? "Loading..." : `${counts.total} reports`}
             </p>
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+        {error && (
+          <section className="mb-6 rounded-2xl border border-red-200 bg-red-50 p-5">
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-red-700">
+              Backend connection error
+            </p>
+
+            <p className="mt-2 text-sm font-semibold text-red-950">
+              Unable to load citizen reports.
+            </p>
+
+            <p className="mt-1 text-sm text-red-800">
+              {error}
+            </p>
+
+            <button
+              type="button"
+              onClick={() => {
+                setLoading(true);
+                void loadReports();
+              }}
+              className="mt-4 rounded-lg border border-red-200 bg-white px-4 py-2 text-xs font-semibold text-red-800 hover:bg-red-100"
+            >
+              Retry
+            </button>
+          </section>
+        )}
+
         <section className="rounded-2xl border border-red-200 bg-red-50 p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -499,14 +799,17 @@ export default function AuthorityIncidentsScreen() {
               <h2 className="mt-2 text-xl font-bold text-red-950">
                 {counts.critical > 0
                   ? `${counts.critical} critical incident${
-                      counts.critical > 1 ? "s" : ""
+                      counts.critical > 1
+                        ? "s"
+                        : ""
                     } require attention`
                   : "No critical incidents require attention"}
               </h2>
 
               <p className="mt-1 max-w-2xl text-sm leading-6 text-red-800">
-                Review incoming reports, verify them against available flood
-                intelligence, and assign the appropriate response team.
+                Review incoming citizen reports, verify
+                them against available flood intelligence,
+                and assign the appropriate response team.
               </p>
             </div>
 
@@ -514,6 +817,7 @@ export default function AuthorityIncidentsScreen() {
               <p className="text-xs font-semibold text-slate-500">
                 Verification queue
               </p>
+
               <p className="mt-1 text-2xl font-bold text-slate-900">
                 {counts.verification}
               </p>
@@ -525,7 +829,7 @@ export default function AuthorityIncidentsScreen() {
           <SummaryCard
             label="Total incidents"
             value={counts.total}
-            detail="Current prototype queue"
+            detail="Backend citizen reports"
           />
 
           <SummaryCard
@@ -556,7 +860,8 @@ export default function AuthorityIncidentsScreen() {
                 </h2>
 
                 <p className="mt-1 text-sm text-slate-500">
-                  Review citizen and authority reports by operational status.
+                  Live citizen reports from the FastAPI
+                  backend.
                 </p>
               </div>
 
@@ -564,7 +869,10 @@ export default function AuthorityIncidentsScreen() {
                 {(
                   [
                     ["ALL", "All"],
-                    ["Under verification", "Verification"],
+                    [
+                      "Under verification",
+                      "Verification",
+                    ],
                     ["Verified", "Verified"],
                     ["Assigned", "Assigned"],
                     ["Resolved", "Resolved"],
@@ -588,12 +896,27 @@ export default function AuthorityIncidentsScreen() {
           </div>
 
           <div>
-            {filteredIncidents.length > 0 ? (
+            {loading ? (
+              <div className="p-10 text-center">
+                <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-slate-200 border-t-[#7f1d1d]" />
+
+                <p className="mt-3 font-semibold text-slate-700">
+                  Loading reports...
+                </p>
+
+                <p className="mt-1 text-sm text-slate-500">
+                  Fetching citizen observations from the
+                  backend.
+                </p>
+              </div>
+            ) : filteredIncidents.length > 0 ? (
               filteredIncidents.map((incident) => (
                 <IncidentCard
                   key={incident.id}
                   incident={incident}
-                  onSelect={() => setSelectedIncident(incident)}
+                  onSelect={() =>
+                    setSelectedIncident(incident)
+                  }
                 />
               ))
             ) : (
@@ -618,26 +941,48 @@ export default function AuthorityIncidentsScreen() {
 
             <div className="mt-5 space-y-4">
               {[
-                ["01", "Receive", "Citizen or authority report enters queue."],
-                ["02", "Verify", "Compare report with available flood intelligence."],
-                ["03", "Assign", "Send the appropriate field team."],
-                ["04", "Resolve", "Close the incident after field confirmation."],
-              ].map(([number, title, description]) => (
-                <div key={number} className="flex gap-4">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#7f1d1d] text-xs font-bold text-white">
-                    {number}
-                  </div>
+                [
+                  "01",
+                  "Receive",
+                  "Citizen report enters the backend queue.",
+                ],
+                [
+                  "02",
+                  "Verify",
+                  "Compare report with available flood intelligence.",
+                ],
+                [
+                  "03",
+                  "Assign",
+                  "Send the appropriate field team.",
+                ],
+                [
+                  "04",
+                  "Resolve",
+                  "Close the incident after field confirmation.",
+                ],
+              ].map(
+                ([number, title, description]) => (
+                  <div
+                    key={number}
+                    className="flex gap-4"
+                  >
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#7f1d1d] text-xs font-bold text-white">
+                      {number}
+                    </div>
 
-                  <div>
-                    <p className="text-sm font-bold text-slate-900">
-                      {title}
-                    </p>
-                    <p className="mt-1 text-sm leading-5 text-slate-500">
-                      {description}
-                    </p>
+                    <div>
+                      <p className="text-sm font-bold text-slate-900">
+                        {title}
+                      </p>
+
+                      <p className="mt-1 text-sm leading-5 text-slate-500">
+                        {description}
+                      </p>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ),
+              )}
             </div>
           </div>
 
@@ -651,42 +996,56 @@ export default function AuthorityIncidentsScreen() {
             </h3>
 
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              In the production system, verified reports such as blocked
-              inlets, drainage surcharge, or unexpected water accumulation
-              become additional evidence for recalibrating flood risk.
+              Verified reports such as blocked inlets,
+              drainage surcharge, or unexpected water
+              accumulation can be marked as model-relevant
+              evidence. The current prototype persists that
+              decision but does not yet automatically
+              recalibrate the flood model.
             </p>
 
             <div className="mt-5 flex flex-wrap items-center gap-2 text-xs font-semibold">
               <span className="rounded-lg bg-slate-100 px-3 py-2">
                 Citizen report
               </span>
+
               <span className="text-slate-400">→</span>
+
               <span className="rounded-lg bg-amber-50 px-3 py-2 text-amber-800">
                 Verification
               </span>
+
               <span className="text-slate-400">→</span>
+
               <span className="rounded-lg bg-blue-50 px-3 py-2 text-blue-800">
                 Model feedback
               </span>
+
               <span className="text-slate-400">→</span>
+
               <span className="rounded-lg bg-red-50 px-3 py-2 text-red-800">
-                Updated risk
+                Future recalibration
               </span>
             </div>
           </div>
         </section>
 
         <p className="mt-6 pb-8 text-xs leading-5 text-slate-400">
-          Prototype interface — incident records, assignments, and verification
-          actions are currently mock/local data. Production deployment will
-          connect these actions to the FastAPI backend and persistent database.
+          BACKEND CONNECTED · Incident records, verification,
+          team assignment and status updates are persisted
+          through the FastAPI report API. Automatic flood-model
+          recalibration from verified reports remains a future
+          integration step.
         </p>
       </main>
 
       {selectedIncident && (
         <IncidentDetailPanel
           incident={selectedIncident}
-          onClose={() => setSelectedIncident(null)}
+          onClose={() =>
+            setSelectedIncident(null)
+          }
+          onUpdated={loadReports}
         />
       )}
     </div>

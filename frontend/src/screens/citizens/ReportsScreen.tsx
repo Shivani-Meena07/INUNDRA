@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Plus,
   Filter,
@@ -16,7 +16,14 @@ import {
   Droplets,
 } from "lucide-react";
 
+import {
+  CitizenReport,
+  createCitizenReport,
+  getCitizenReports,
+} from "../../data/api";
+
 import { useApp } from "../../state/AppContext";
+
 import {
   cityData,
   Incident,
@@ -24,6 +31,7 @@ import {
   RiskLevel,
   IncidentStatus,
 } from "../../data/mockData";
+
 import StatusBadge from "../../components/ui/StatusBadge";
 
 /* =========================================================
@@ -37,6 +45,8 @@ const FILTERS = [
   "MODERATE",
   "LOW",
 ] as const;
+
+type ReportFilter = (typeof FILTERS)[number];
 
 const ISSUE_TYPES: IncidentType[] = [
   "Blocked Drain",
@@ -60,6 +70,68 @@ const typeIcon: Record<string, string> = {
   "Damaged Drain": "🔨",
   Other: "📋",
 };
+
+/*
+ * Prototype coordinates used when a citizen enters a
+ * location as text but does not provide GPS coordinates.
+ *
+ * These are city-centre/default coordinates only.
+ * Production should replace this with actual map/GPS
+ * coordinates selected by the citizen.
+ */
+const CITY_COORDS: Record<
+  string,
+  {
+    latitude: number;
+    longitude: number;
+  }
+> = {
+  delhi: {
+    latitude: 28.6139,
+    longitude: 77.209,
+  },
+
+  mumbai: {
+    latitude: 19.076,
+    longitude: 72.8777,
+  },
+
+  chennai: {
+    latitude: 13.0827,
+    longitude: 80.2707,
+  },
+
+  Delhi: {
+    latitude: 28.6139,
+    longitude: 77.209,
+  },
+
+  Mumbai: {
+    latitude: 19.076,
+    longitude: 72.8777,
+  },
+
+  Chennai: {
+    latitude: 13.0827,
+    longitude: 80.2707,
+  },
+};
+
+/* =========================================================
+   TYPES
+   ========================================================= */
+
+/*
+ * We keep the existing Incident UI model but add the
+ * backend's actual model_relevant decision.
+ */
+type ReportIncident = Incident & {
+  modelRelevant: boolean;
+};
+
+/* =========================================================
+   STATUS META
+   ========================================================= */
 
 const statusMeta: Record<
   IncidentStatus,
@@ -99,16 +171,35 @@ const statusMeta: Record<
   },
 };
 
-/* =========================================================
-   HELPERS
-   ========================================================= */
+/*
+ * Backend can return "Rejected", while the existing
+ * frontend IncidentStatus does not necessarily contain it.
+ *
+ * We normalize rejected reports to Closed for the current
+ * citizen UI rather than changing the shared mockData type.
+ */
+function normalizeIncidentStatus(
+  status: string,
+): IncidentStatus {
+  switch (status.toLowerCase()) {
+    case "confirmed":
+      return "Confirmed";
 
-function getModelRelevance(type: IncidentType) {
-  return (
-    type === "Blocked Drain" ||
-    type === "Drain Overflow" ||
-    type === "Waterlogging"
-  );
+    case "under verification":
+      return "Under verification";
+
+    case "resolved":
+      return "Resolved";
+
+    case "closed":
+      return "Closed";
+
+    case "rejected":
+      return "Closed";
+
+    default:
+      return "Under verification";
+  }
 }
 
 /* =========================================================
@@ -120,14 +211,14 @@ function IncidentRow({
   expanded,
   onToggle,
 }: {
-  incident: Incident;
+  incident: ReportIncident;
   expanded: boolean;
   onToggle: () => void;
 }) {
   const meta = statusMeta[incident.status];
   const StatusIcon = meta.icon;
 
-  const affectsModel = getModelRelevance(incident.type);
+  const affectsModel = incident.modelRelevant;
 
   return (
     <div
@@ -186,9 +277,7 @@ function IncidentRow({
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
-            <StatusBadge
-              level={incident.severity}
-            />
+            <StatusBadge level={incident.severity} />
 
             <div className="hidden items-center gap-1 sm:flex">
               <StatusIcon
@@ -259,7 +348,7 @@ function IncidentRow({
                 }`}
               >
                 {affectsModel
-                  ? "Potential drainage impact"
+                  ? "Potential model input"
                   : "Observation only"}
               </div>
             </div>
@@ -286,10 +375,12 @@ function IncidentRow({
                     </div>
 
                     <p className="mt-1 text-xs leading-relaxed text-maroon-900">
-                      A confirmed drainage-related
-                      observation can be used as an
-                      infrastructure-condition input
-                      during model recalibration.
+                      This confirmed drainage-related
+                      observation has been marked as
+                      relevant to the flood model.
+                      Production recalibration can use
+                      verified infrastructure conditions
+                      as model inputs.
                     </p>
                   </div>
                 </div>
@@ -307,10 +398,12 @@ function IncidentRow({
 
 function ReportModal({
   onClose,
+  onSubmitted,
 }: {
   onClose: () => void;
+  onSubmitted: () => Promise<void>;
 }) {
-  const { dispatch, state } = useApp();
+  const { state } = useApp();
 
   const city = cityData[state.city];
 
@@ -327,7 +420,7 @@ function ReportModal({
     useState<RiskLevel>("MODERATE");
 
   const [submitted, setSubmitted] =
-    useState<string | null>(null);
+    useState<CitizenReport | null>(null);
 
   const [error, setError] =
     useState("");
@@ -335,7 +428,9 @@ function ReportModal({
   const [submitting, setSubmitting] =
     useState(false);
 
-  const handleSubmit = (
+  /* ---------------- SUBMIT ---------------- */
+
+  const handleSubmit = async (
     event: React.FormEvent<HTMLFormElement>,
   ) => {
     event.preventDefault();
@@ -360,49 +455,51 @@ function ReportModal({
       return;
     }
 
+    if (trimmedDescription.length > 500) {
+      setError(
+        "Description must be 500 characters or less.",
+      );
+      return;
+    }
+
     setError("");
     setSubmitting(true);
 
-    const refId = `IN-2026-${Math.floor(
-      Math.random() * 9000 + 1000,
-    )}`;
+    try {
+      const coords =
+        CITY_COORDS[state.city] ??
+        CITY_COORDS[
+          String(state.city).toLowerCase()
+        ] ??
+        CITY_COORDS.delhi;
 
-    const reportedAt =
-      new Date().toLocaleTimeString(
-        "en-IN",
-        {
-          hour: "2-digit",
-          minute: "2-digit",
-        },
+      const report =
+        await createCitizenReport({
+          issue_type: type,
+          location: trimmedLocation,
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          severity,
+          description:
+            trimmedDescription || undefined,
+        });
+
+      setSubmitted(report);
+
+      /*
+       * Refresh the parent screen immediately so the new
+       * backend-persisted report appears in the list.
+       */
+      await onSubmitted();
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : "Unable to submit the report. Please try again.",
       );
-
-    const incident: Incident = {
-      id: refId,
-      location: trimmedLocation,
-      type,
-      severity,
-      reportedAt,
-      status: "Under verification",
-      impact: "Pending assessment",
-      description: trimmedDescription,
-    };
-
-    /*
-     * Current prototype behaviour:
-     * The incident is stored in AppContext.
-     *
-     * Production behaviour:
-     * POST the report to the FastAPI backend,
-     * persist it in PostgreSQL/PostGIS,
-     * then make it available to authority operators.
-     */
-    dispatch({
-      type: "ADD_INCIDENT",
-      incident,
-    });
-
-    setSubmitted(refId);
-    setSubmitting(false);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   /* ---------------- SUBMITTED STATE ---------------- */
@@ -424,8 +521,8 @@ function ReportModal({
             </h2>
 
             <p className="mt-1 text-sm leading-5 text-warm-500">
-              Your observation has been added to
-              the local incident feed.
+              Your observation has been
+              submitted to the INUNDRA backend.
             </p>
           </div>
 
@@ -435,11 +532,15 @@ function ReportModal({
             </div>
 
             <div className="mt-1 font-mono text-base font-bold text-maroon-700">
-              {submitted}
+              IN-
+              {String(submitted.id).padStart(
+                4,
+                "0",
+              )}
             </div>
 
             <div className="mt-1 text-xs text-warm-500">
-              Status: Under verification
+              Status: {submitted.status}
             </div>
           </div>
 
@@ -451,11 +552,11 @@ function ReportModal({
               />
 
               <p className="text-[11px] leading-relaxed text-blue-800">
-                Authorities can review this observation
-                alongside rainfall, drainage and flood
-                intelligence. Confirmed infrastructure
-                issues can later contribute to the
-                model feedback loop.
+                Authorities can review this
+                observation alongside rainfall,
+                drainage and flood intelligence.
+                Verified infrastructure issues can
+                be marked as model-relevant.
               </p>
             </div>
           </div>
@@ -613,9 +714,10 @@ function ReportModal({
                   <button
                     key={item}
                     type="button"
-                    onClick={() =>
-                      setSeverity(item)
-                    }
+                    onClick={() => {
+                      setSeverity(item);
+                      setError("");
+                    }}
                     className={`border py-2 text-xs font-medium transition-colors ${
                       selected
                         ? `${selectedClass} text-white`
@@ -641,11 +743,13 @@ function ReportModal({
 
             <textarea
               value={description}
-              onChange={(event) =>
+              onChange={(event) => {
                 setDescription(
                   event.target.value,
-                )
-              }
+                );
+                setError("");
+              }}
+              maxLength={500}
               rows={4}
               placeholder="Describe what you observed — water depth, blockage, affected road, overflow..."
               className="w-full resize-none border border-warm-200 px-3 py-2.5 text-sm text-warm-800 outline-none placeholder:text-warm-300 transition focus:border-maroon-600"
@@ -695,21 +799,19 @@ function ReportModal({
             </div>
           </div>
 
-          {/* Prototype notice */}
+          {/* Backend notice */}
 
-          <div className="border border-amber-200 bg-amber-50 px-3 py-3">
+          <div className="border border-green-200 bg-green-50 px-3 py-3">
             <div className="flex items-start gap-2">
-              <Clock
+              <CheckCircle
                 size={14}
-                className="mt-0.5 shrink-0 text-amber-600"
+                className="mt-0.5 shrink-0 text-green-600"
               />
 
-              <p className="text-[11px] leading-relaxed text-amber-800">
-                This prototype stores the report in
-                the current frontend session. Backend
-                persistence and authority synchronization
-                will be connected through the FastAPI
-                incident API.
+              <p className="text-[11px] leading-relaxed text-green-800">
+                Reports are now submitted to the
+                FastAPI backend and can be reviewed
+                by the authority workflow.
               </p>
             </div>
           </div>
@@ -755,29 +857,139 @@ export default function ReportsScreen() {
   const [modalOpen, setModalOpen] =
     useState(false);
 
+  const [backendReports, setBackendReports] =
+    useState<CitizenReport[]>([]);
+
+  const [reportsLoading, setReportsLoading] =
+    useState(true);
+
+  const [reportsError, setReportsError] =
+    useState("");
+
   const city = cityData[state.city];
 
-  const incidents = state.incidents;
+  /* =======================================================
+     LOAD BACKEND REPORTS
+     ======================================================= */
 
-  const filter = state.incidentFilter;
+  const loadReports = async () => {
+    try {
+      setReportsError("");
 
-  /* ---------------- FILTERED INCIDENTS ---------------- */
+      const reports =
+        await getCitizenReports();
 
-  const filteredIncidents = useMemo(() => {
-    if (filter === "All") {
-      return incidents;
+      setBackendReports(reports);
+    } catch (error) {
+      setReportsError(
+        error instanceof Error
+          ? error.message
+          : "Unable to load reports.",
+      );
+    } finally {
+      setReportsLoading(false);
     }
+  };
 
-    return incidents.filter(
-      (incident) =>
-        incident.severity === filter,
+  useEffect(() => {
+    void loadReports();
+
+    const interval =
+      window.setInterval(() => {
+        void loadReports();
+      }, 30000);
+
+    return () =>
+      window.clearInterval(interval);
+  }, []);
+
+  /* =======================================================
+     MAP BACKEND REPORTS → EXISTING UI MODEL
+     ======================================================= */
+
+  const incidents: ReportIncident[] =
+    useMemo(
+      () =>
+        backendReports.map((report) => ({
+          id: `IN-${String(
+            report.id,
+          ).padStart(4, "0")}`,
+
+          location: report.location,
+
+          type:
+            report.issue_type as IncidentType,
+
+          severity:
+            report.severity as RiskLevel,
+
+          reportedAt:
+            new Date(
+              report.created_at,
+            ).toLocaleTimeString(
+              "en-IN",
+              {
+                hour: "2-digit",
+                minute: "2-digit",
+              },
+            ),
+
+          status:
+            normalizeIncidentStatus(
+              report.status,
+            ),
+
+          impact:
+            report.status === "Confirmed"
+              ? "Verified field condition"
+              : report.status === "Resolved"
+                ? "Incident resolved"
+                : report.status ===
+                    "Rejected"
+                  ? "Report rejected during verification"
+                  : "Pending assessment",
+
+          description:
+            report.description ?? "",
+
+          modelRelevant:
+            report.model_relevant,
+        })),
+      [backendReports],
     );
-  }, [filter, incidents]);
 
-  /* ---------------- COUNTS ---------------- */
+  /* =======================================================
+     FILTER
+     ======================================================= */
 
-  const counts = useMemo(() => {
-    return {
+  const filter: ReportFilter =
+    state.incidentFilter as ReportFilter;
+
+  /* =======================================================
+     FILTERED INCIDENTS
+     ======================================================= */
+
+  const filteredIncidents =
+    useMemo(() => {
+      if (filter === "All") {
+        return incidents;
+      }
+
+      return incidents.filter(
+        (incident) =>
+          incident.severity === filter,
+      );
+    }, [filter, incidents]);
+
+  /* =======================================================
+     COUNTS
+     ======================================================= */
+
+  const counts: Record<
+    ReportFilter,
+    number
+  > = useMemo(
+    () => ({
       All: incidents.length,
 
       CRITICAL: incidents.filter(
@@ -799,8 +1011,13 @@ export default function ReportsScreen() {
         (incident) =>
           incident.severity === "LOW",
       ).length,
-    };
-  }, [incidents]);
+    }),
+    [incidents],
+  );
+
+  /* =======================================================
+     STATUS COUNTS
+     ======================================================= */
 
   const statusCounts = useMemo(
     () => ({
@@ -824,22 +1041,30 @@ export default function ReportsScreen() {
     [incidents],
   );
 
+  /* =======================================================
+     MODEL RELEVANT REPORTS
+     ======================================================= */
+
   const modelRelevantReports =
     useMemo(
       () =>
-        incidents.filter((incident) =>
-          getModelRelevance(
-            incident.type,
-          ),
+        incidents.filter(
+          (incident) =>
+            incident.modelRelevant,
         ).length,
       [incidents],
     );
+
+  /* =======================================================
+     PRIORITY REPORTS
+     ======================================================= */
 
   const priorityReports = useMemo(
     () =>
       incidents.filter(
         (incident) =>
-          incident.severity === "CRITICAL" ||
+          incident.severity ===
+            "CRITICAL" ||
           incident.severity === "HIGH",
       ),
     [incidents],
@@ -867,8 +1092,8 @@ export default function ReportsScreen() {
           </h1>
 
           <p className="mt-1 text-sm text-warm-500">
-            Report real-world conditions that can
-            strengthen flood nowcasting.
+            Report real-world conditions that
+            can strengthen flood nowcasting.
           </p>
         </div>
 
@@ -881,6 +1106,40 @@ export default function ReportsScreen() {
           Report an Issue
         </button>
       </div>
+
+      {/* ===================================================
+          BACKEND ERROR
+          =================================================== */}
+
+      {reportsError && (
+        <div className="mb-6 flex items-start gap-3 border border-red-200 bg-red-50 px-4 py-3">
+          <AlertCircle
+            size={16}
+            className="mt-0.5 shrink-0 text-red-600"
+          />
+
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-semibold text-red-900">
+              Unable to load backend reports
+            </div>
+
+            <p className="mt-1 text-[11px] leading-relaxed text-red-700">
+              {reportsError}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setReportsLoading(true);
+              void loadReports();
+            }}
+            className="shrink-0 border border-red-200 bg-white px-3 py-1.5 text-[11px] font-medium text-red-700 hover:bg-red-100"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* ===================================================
           OVERVIEW
@@ -900,11 +1159,13 @@ export default function ReportsScreen() {
           </div>
 
           <div className="font-mono text-2xl font-bold text-warm-900">
-            {incidents.length}
+            {reportsLoading
+              ? "—"
+              : incidents.length}
           </div>
 
           <div className="mt-1 text-[10px] text-warm-400">
-            Recorded observations
+            Backend records
           </div>
         </div>
 
@@ -921,7 +1182,9 @@ export default function ReportsScreen() {
           </div>
 
           <div className="font-mono text-2xl font-bold text-amber-700">
-            {statusCounts.verification}
+            {reportsLoading
+              ? "—"
+              : statusCounts.verification}
           </div>
 
           <div className="mt-1 text-[10px] text-warm-400">
@@ -942,7 +1205,9 @@ export default function ReportsScreen() {
           </div>
 
           <div className="font-mono text-2xl font-bold text-red-700">
-            {statusCounts.confirmed}
+            {reportsLoading
+              ? "—"
+              : statusCounts.confirmed}
           </div>
 
           <div className="mt-1 text-[10px] text-warm-400">
@@ -963,11 +1228,13 @@ export default function ReportsScreen() {
           </div>
 
           <div className="font-mono text-2xl font-bold text-maroon-700">
-            {modelRelevantReports}
+            {reportsLoading
+              ? "—"
+              : modelRelevantReports}
           </div>
 
           <div className="mt-1 text-[10px] text-warm-400">
-            Potential model inputs
+            Authority-marked model inputs
           </div>
         </div>
       </div>
@@ -1022,7 +1289,7 @@ export default function ReportsScreen() {
                 number: "04",
                 title: "Recalculate",
                 description:
-                  "The drainage and flood models incorporate the condition.",
+                  "The drainage and flood models can incorporate the condition.",
               },
               {
                 number: "05",
@@ -1163,12 +1430,9 @@ export default function ReportsScreen() {
           >
             {item}
 
-            {counts[item] !==
-              undefined && (
-              <span className="ml-1 opacity-70">
-                ({counts[item]})
-              </span>
-            )}
+            <span className="ml-1 opacity-70">
+              ({counts[item]})
+            </span>
           </button>
         ))}
       </div>
@@ -1192,45 +1456,71 @@ export default function ReportsScreen() {
           </div>
         </div>
 
-        {filteredIncidents.length ===
-          0 && (
+        {/* Loading */}
+
+        {reportsLoading && (
           <div className="px-4 py-10 text-center">
-            <AlertCircle
-              size={22}
-              className="mx-auto text-warm-300"
+            <RefreshCw
+              size={20}
+              className="mx-auto animate-spin text-maroon-600"
             />
 
             <div className="mt-2 text-sm font-medium text-warm-700">
-              No incidents found
+              Loading reports
             </div>
 
             <div className="mt-1 text-xs text-warm-400">
-              There are no reports matching
-              this severity filter.
+              Fetching citizen observations from
+              the backend.
             </div>
           </div>
         )}
 
-        {filteredIncidents.map(
-          (incident) => (
-            <IncidentRow
-              key={incident.id}
-              incident={incident}
-              expanded={
-                expandedId ===
-                incident.id
-              }
-              onToggle={() =>
-                setExpandedId(
+        {/* Empty */}
+
+        {!reportsLoading &&
+          filteredIncidents.length ===
+            0 && (
+            <div className="px-4 py-10 text-center">
+              <AlertCircle
+                size={22}
+                className="mx-auto text-warm-300"
+              />
+
+              <div className="mt-2 text-sm font-medium text-warm-700">
+                No incidents found
+              </div>
+
+              <div className="mt-1 text-xs text-warm-400">
+                There are no backend reports matching
+                this severity filter.
+              </div>
+            </div>
+          )}
+
+        {/* Reports */}
+
+        {!reportsLoading &&
+          filteredIncidents.map(
+            (incident) => (
+              <IncidentRow
+                key={incident.id}
+                incident={incident}
+                expanded={
                   expandedId ===
-                    incident.id
-                    ? null
-                    : incident.id,
-                )
-              }
-            />
-          ),
-        )}
+                  incident.id
+                }
+                onToggle={() =>
+                  setExpandedId(
+                    expandedId ===
+                      incident.id
+                      ? null
+                      : incident.id,
+                  )
+                }
+              />
+            ),
+          )}
       </div>
 
       {/* ===================================================
@@ -1254,7 +1544,8 @@ export default function ReportsScreen() {
                 Blocked drains, sudden waterlogging,
                 overflowing drains, damaged drainage
                 infrastructure, and unusually deep
-                water are especially useful observations.
+                water are especially useful
+                observations.
               </p>
             </div>
           </div>
@@ -1275,7 +1566,8 @@ export default function ReportsScreen() {
               <p className="mt-1 text-[11px] leading-relaxed text-warm-600">
                 Field observations provide another
                 evidence source alongside rainfall,
-                terrain and drainage-model information.
+                terrain and drainage-model
+                information.
               </p>
             </div>
           </div>
@@ -1283,18 +1575,17 @@ export default function ReportsScreen() {
       </div>
 
       {/* ===================================================
-          PROTOTYPE STATUS
+          BACKEND STATUS
           =================================================== */}
 
-      <div className="mt-4 border border-warm-200 bg-white px-3 py-2.5">
-        <p className="text-[10px] font-mono leading-relaxed text-warm-400">
-          PROTOTYPE WORKFLOW · Citizen reports currently
-          update the frontend incident state. The FastAPI
-          backend does not yet expose a persistent incident
-          endpoint. The planned production flow is:
-          citizen report → backend persistence → authority
-          verification → drainage-condition update →
-          model recalibration.
+      <div className="mt-4 border border-green-200 bg-green-50 px-3 py-2.5">
+        <p className="text-[10px] font-mono leading-relaxed text-green-800">
+          BACKEND CONNECTED · Citizen reports are
+          persisted through the FastAPI report API.
+          Authority verification can update report
+          status, assignment and model relevance.
+          Production model recalibration remains a
+          separate integration step.
         </p>
       </div>
 
@@ -1307,6 +1598,7 @@ export default function ReportsScreen() {
           onClose={() =>
             setModalOpen(false)
           }
+          onSubmitted={loadReports}
         />
       )}
     </div>
